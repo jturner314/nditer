@@ -7,6 +7,7 @@ use ndarray::{Axis, Dimension};
 ///
 /// This struct is created by the `broadcast` method on `NdProducer`. See its
 /// documentation for more.
+#[derive(Clone, Debug)]
 pub struct BroadcastProducer<T, D>
 where
     T: NdReshape,

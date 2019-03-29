@@ -1,7 +1,7 @@
 use crate::{CanMerge, IntoNdProducer, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
 use itertools::izip;
 use ndarray::prelude::*;
-use ndarray::{Data, DataMut, RawData, RawDataMut, RawViewRepr, Slice, ViewRepr};
+use ndarray::{Data, DataMut, RawData, RawDataClone, RawDataMut, RawViewRepr, Slice, ViewRepr};
 use std::marker::PhantomData;
 
 /// Extension trait for `ndarray::ArrayBase`.
@@ -228,6 +228,29 @@ where
     fn into(self) -> ArrayBase<S, D> {
         self.arr
     }
+}
+
+impl<S, D> Clone for ArrayBaseProducer<S, D>
+where
+    S: RawDataClone,
+    D: Clone,
+{
+    fn clone(&self) -> ArrayBaseProducer<S, D> {
+        ArrayBaseProducer {
+            arr: self.arr.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, other: &Self) {
+        self.arr.clone_from(&other.arr)
+    }
+}
+
+impl<S, D> Copy for ArrayBaseProducer<S, D>
+where
+    S: RawDataClone + Copy,
+    D: Copy,
+{
 }
 
 impl<S, D> NdReshape for ArrayBaseProducer<S, D>

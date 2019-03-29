@@ -6,6 +6,7 @@ use std::cmp;
 ///
 /// This struct is created by the `select_indices_axis` method on `NdProducer`.
 /// See its documentation for more.
+#[derive(Clone, Debug)]
 pub struct SelectIndicesAxis<'a, T> {
     /// The inner producer.
     inner: T,
