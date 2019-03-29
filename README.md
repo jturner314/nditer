@@ -1,4 +1,4 @@
-# `nditer`
+# nditer
 
 [![Build status](https://travis-ci.org/jturner314/nditer.svg?branch=master)](https://travis-ci.org/jturner314/nditer)
 [![Coverage](https://codecov.io/gh/jturner314/nditer/branch/master/graph/badge.svg)](https://codecov.io/gh/jturner314/nditer)
