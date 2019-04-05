@@ -1,7 +1,7 @@
 use crate::{
     CanMerge, IntoNdProducerWithShape, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat,
 };
-use ndarray::{Axis, Dimension};
+use ndarray::{Axis, Dimension, IntoDimension};
 
 /// Creates an instance that can be converted into a producer that calls
 /// `repeater` to compute each element.
@@ -41,12 +41,15 @@ where
 ///   case that `F: Fn` but does not always return the same value (e.g. if it's
 ///   mutating a `Cell` or `RefCell`), you should avoid using the
 ///   `NdSourceRepeat` implementation (e.g. for broadcasting).
-pub fn repeat_with<A, F, D>(shape: D, repeater: F) -> RepeatWith<F, D>
+pub fn repeat_with<A, F, E>(shape: E, repeater: F) -> RepeatWith<F, E::Dim>
 where
     F: FnMut() -> A,
-    D: Dimension,
+    E: IntoDimension,
 {
-    RepeatWith { repeater, shape }
+    RepeatWith {
+        repeater,
+        shape: shape.into_dimension(),
+    }
 }
 
 /// An object that can be converted into a producer that calls a closure to
