@@ -1,5 +1,7 @@
 use ndarray::prelude::*;
-use nditer::{ArrayBaseExt, IntoNdProducer, NdProducer};
+use nditer::{repeat_with, ArrayBaseExt, IntoNdProducer, NdProducer};
+use quickcheck::TestResult;
+use quickcheck_macros::quickcheck;
 
 #[test]
 fn iter_fold_ix0() {
@@ -50,4 +52,19 @@ fn iter_fortran() {
     let mut coll = Vec::new();
     a.producer().into_iter_any_ord().for_each(|i| coll.push(i));
     assert_eq!(a.t().iter().collect::<Vec<_>>(), coll);
+}
+
+// TODO: Test with different layouts.
+#[quickcheck]
+fn iter_len(shape: Vec<usize>, consume: usize) -> TestResult {
+    const MAX_LEN: usize = 1_000_000;
+    let total_len = match shape.iter().try_fold(1usize, |acc, &x| acc.checked_mul(x)) {
+        Some(total_len) if total_len >= consume && total_len <= MAX_LEN => total_len,
+        _ => return TestResult::discard(),
+    };
+    let mut iter = repeat_with(shape, || 0).into_iter();
+    for _ in 0..consume {
+        let _ = iter.next();
+    }
+    TestResult::from_bool(iter.len() == total_len - consume)
 }
