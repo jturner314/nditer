@@ -2,6 +2,12 @@ use ndarray::prelude::*;
 use nditer::{ArrayBaseExt, IntoNdProducer, NdProducer};
 
 #[test]
+fn iter_fold_ix0() {
+    let arr = arr0(5);
+    assert_eq!(arr.producer().into_iter().fold(1, |acc, x| acc + x), 6);
+}
+
+#[test]
 fn iter_map() {
     let arr = array![[1, 2, 3], [4, 5, 6]];
     let iter = arr.producer().into_iter();

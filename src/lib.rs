@@ -992,6 +992,11 @@ macro_rules! impl_iter {
                 F: FnMut(B, Self::Item) -> B,
             {
                 debug_assert_eq!(self.axes.ndim(), self.axis_lens.ndim());
+                if self.axes.ndim() == 0 {
+                    let elem = self.next().unwrap();
+                    debug_assert!(self.next().is_none());
+                    return f(init, elem);
+                }
                 let mut acc = init;
                 let inner_unroll = self.axes.ndim() - 1;
                 let inner_unroll_axis = Axis(self.axes[inner_unroll]);
