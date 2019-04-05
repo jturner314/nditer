@@ -893,6 +893,10 @@ pub struct Iter<P: NdProducer> {
     /// The source to iterate over.
     source: P::Source,
     /// Pointer and index to next item. `None` if iteration is complete.
+    ///
+    /// Note that the order of the elements in the index matches the order of
+    /// `axes`. For example, `index[3]` is the index for axis `Axis(axes[3])`,
+    /// not `Axis(3)`.
     ptr_idx: Option<(<P::Source as NdAccess>::Ptr, P::Dim)>,
     /// Axes to iterate over (outermost axis first).
     axes: P::Dim,
@@ -932,6 +936,10 @@ impl<P: NdProducer> Iter<P> {
 struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     source: &'a mut S,
     /// Pointer and index to next item. `None` if iteration is complete.
+    ///
+    /// Note that the order of the elements in the index matches the order of
+    /// `axes`. For example, `index[3]` is the index for axis `Axis(axes[3])`,
+    /// not `Axis(3)`.
     ptr_idx: Option<(S::Ptr, D)>,
     /// Axes to iterate over (outermost axis first).
     axes: &'a D,
@@ -965,7 +973,20 @@ macro_rules! impl_iter {
 
         impl<$($generics)*> ExactSizeIterator for $self {
             fn len(&self) -> usize {
-                self.axis_lens.size()
+                match &self.ptr_idx {
+                    None => 0,
+                    Some((_, idx)) => {
+                        // Number of elements that have been consumed so far.
+                        let mut consumed = 0;
+                        // Product of the lengths of axes that are inner of the current one.
+                        let mut inner_len = 1;
+                        for (i, axis_len) in izip!(idx.slice(), self.axis_lens.slice()).rev() {
+                            consumed += i * inner_len;
+                            inner_len *= axis_len;
+                        }
+                        self.axis_lens.size() - consumed
+                    }
+                }
             }
         }
 
@@ -992,6 +1013,11 @@ macro_rules! impl_iter {
                 F: FnMut(B, Self::Item) -> B,
             {
                 debug_assert_eq!(self.axes.ndim(), self.axis_lens.ndim());
+                if self.axes.ndim() == 0 {
+                    let elem = self.next().unwrap();
+                    debug_assert!(self.next().is_none());
+                    return f(init, elem);
+                }
                 let mut acc = init;
                 let inner_unroll = self.axes.ndim() - 1;
                 let inner_unroll_axis = Axis(self.axes[inner_unroll]);
