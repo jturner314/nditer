@@ -2,6 +2,66 @@ use crate::{CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat}
 use ndarray::{ArrayView1, Axis};
 use std::cmp;
 
+/// Wrapper for a view of indices that keeps track of the maximum index value.
+///
+/// This provides a clean way to pre-compute and store the maximum index so
+/// that it doesn't need to be managed by `SelectIndicesAxis`. (It's helpful to
+/// pre-compute the maximum index so that `SelectIndicesAxis::into_source()` is
+/// fast in case the user wants to clone the `SelectIndicesAxis` producer and
+/// consume it multiple times.)
+#[derive(Clone, Debug)]
+struct Indices<'a> {
+    /// The array of indices.
+    indices: ArrayView1<'a, usize>,
+    /// The maximum value of `indices`, or `None` iff `indices` is empty.
+    max_index: Option<usize>,
+}
+
+impl<'a> Indices<'a> {
+    /// Creates a new instance of `Indices` containing the `indices`.
+    pub fn new(indices: ArrayView1<'a, usize>) -> Indices<'a> {
+        let max_index = if indices.is_empty() {
+            None
+        } else {
+            Some(indices.fold(0, |acc, &x| acc.max(x)))
+        };
+        Indices { indices, max_index }
+    }
+
+    /// Returns `true` iff no index is `>= axis_len`.
+    pub fn are_in_bounds(&self, axis_len: usize) -> bool {
+        match self.max_index {
+            None => true,
+            Some(max) if max < axis_len => true,
+            _ => false,
+        }
+    }
+
+    /// Returns the number of indices.
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Returns `true` iff there aren't any indices.
+    pub fn is_empty(&self) -> bool {
+        self.max_index.is_none()
+    }
+
+    /// Inverts the order of the indices.
+    pub fn invert_axis(&mut self) {
+        self.indices.invert_axis(Axis(0))
+    }
+
+    /// Gets the index value located at `index` in the sequence of indices.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `index` is less than `self.len()`.
+    pub unsafe fn uget(&self, index: usize) -> &usize {
+        self.indices.uget(index)
+    }
+}
+
 /// A producer that selects specific indices along an axis.
 ///
 /// This struct is created by the `select_indices_axis` method on `NdProducer`.
@@ -20,7 +80,7 @@ pub struct SelectIndicesAxis<'a, T> {
     /// same value is always returned for the same location, so it wouldn't be
     /// sufficient to pre-check that all the indices are in-bounds in
     /// `NdProducer::into_source`.)
-    indices: ArrayView1<'a, usize>,
+    indices: Indices<'a>,
 }
 
 impl<'a, T> SelectIndicesAxis<'a, T> {
@@ -28,7 +88,7 @@ impl<'a, T> SelectIndicesAxis<'a, T> {
         SelectIndicesAxis {
             inner,
             axis,
-            indices,
+            indices: Indices::new(indices),
         }
     }
 }
@@ -46,10 +106,7 @@ where
         let indices = self.indices;
         // Check that all indices are in-bounds and can be cast to isize
         // without overflow.
-        let axis_len = inner.len_of(axis);
-        for &index in &self.indices {
-            assert!(index < axis_len && index <= std::isize::MAX as usize);
-        }
+        assert!(indices.are_in_bounds(cmp::min(inner.len_of(axis), std::isize::MAX as usize + 1)));
         SelectIndicesAxis {
             inner,
             axis,
@@ -87,7 +144,7 @@ where
 
     fn invert_axis(&mut self, axis: Axis) {
         if axis == self.axis {
-            self.indices.invert_axis(Axis(0))
+            self.indices.invert_axis()
         } else {
             self.inner.invert_axis(axis)
         }
