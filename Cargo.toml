@@ -7,15 +7,21 @@ edition = "2018"
 [dependencies]
 itertools = "0.7"
 ndarray = "0.12"
+num-traits = "0.2"
 
 [dev-dependencies]
 criterion = "0.2"
+ndarray-rand = "0.9"
 quickcheck = "0.8"
 quickcheck_macros = "0.8"
 rand = "0.6"
 
 [[bench]]
 name = "iter"
+harness = false
+
+[[bench]]
+name = "sum"
 harness = false
 
 [patch.crates-io]

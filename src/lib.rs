@@ -20,8 +20,10 @@ use self::adapters::{
     BroadcastProducer, Cloned, FoldAxesProducer, ForbidInvertAxes, IndexedProducer, Inspect, Map,
     SelectIndicesAxis, Zip,
 };
+use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
 use ndarray::{Array, ArrayBase, Axis, Data, Dimension, IntoDimension, Ix1, ShapeBuilder};
+use num_traits::Zero;
 
 /// Conversion into an `NdProducer`.
 pub trait IntoNdProducer {
@@ -619,6 +621,17 @@ pub trait NdProducer: NdReshape + Sized {
         }
         out
     }
+
+    /// Compute the sum of the elements in a pairwise fashion.
+    // This is explicitly not a method on `Iter` because it relies on splitting
+    // the iterator, and the splitting procedure assumes that the iterator has
+    // not been partially iterated over.
+    fn pairwise_sum(self) -> Self::Item
+    where
+        Self::Item: Zero + Clone + std::ops::Add<Output = Self::Item>,
+    {
+        pairwise_sum(self)
+    }
 }
 
 /// An object that has an n-dimensional shape and supports various
@@ -803,9 +816,10 @@ pub unsafe trait NdSourceRepeat: NdSource {}
 ///
 /// For safety, you must guarantee that:
 ///
-/// * if `first_ptr` returns `Some`, it is safe to offset the pointer to every
-///   location within the shape using `ptr_offset_axis` and/or (for offsets
-///   along contiguous axes) `ptr_offset_axis_contiguous`
+/// * if `first_ptr` returns `Some`, the volume is not empty, and it's safe to
+///   offset the pointer to every location within the shape using
+///   `ptr_offset_axis` and/or (for offsets along contiguous axes)
+///   `ptr_offset_axis_contiguous`
 ///
 /// * the return value of `shape` is correct and consistent with `len_of`,
 ///   `is_empty`, and `ndim`
@@ -1013,3 +1027,4 @@ mod dim_traits;
 mod impl_ndarray;
 mod iter;
 mod optimize;
+mod pairwise_sum;
