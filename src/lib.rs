@@ -899,6 +899,10 @@ pub struct Iter<P: NdProducer> {
     /// Axes to iterate over (outermost axis first).
     axes: P::Dim,
     /// Lengths of the axes (in order of `axes`).
+    ///
+    /// All axis lengths must be `<= isize::MAX` so that indices can be safely
+    /// cast to `isize` without overflow. Additionally, all axis lengths must
+    /// be no larger than the corresponding axis lengths of `source`.
     axis_lens: P::Dim,
 }
 
@@ -908,12 +912,16 @@ impl<P: NdProducer> Iter<P> {
     ///
     /// `axes` must be a subset of the axes of the producer.
     ///
-    /// **Panics** if any of the axes in `axes` are out of bounds or if an axis
-    /// is repeated more than once.
+    /// **Panics** if any of the axes in `axes` are out of bounds, if an axis
+    /// is repeated more than once, or if any axis length overflows `isize`.
     fn new(producer: P, axes: P::Dim) -> Self {
         let source = producer.into_source();
         assert_valid_unique_axes::<P::Dim>(source.ndim(), axes.slice());
-        let axis_lens = axes.mapv(|axis| source.len_of(Axis(axis)));
+        let axis_lens = axes.mapv(|axis| {
+            let axis_len = source.len_of(Axis(axis));
+            assert!(axis_len <= std::isize::MAX as usize);
+            axis_len
+        });
         let ptr_idx = match (source.first_ptr(), P::Dim::first_index(&axis_lens)) {
             (Some(ptr), Some(idx)) => Some((ptr, idx)),
             _ => None,
@@ -939,6 +947,10 @@ struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     /// Axes to iterate over (outermost axis first).
     axes: &'a D,
     /// Lengths of the axes (in order of `axes`).
+    ///
+    /// All axis lengths must be `<= isize::MAX` so that indices can be safely
+    /// cast to `isize` without overflow. Additionally, all axis lengths must
+    /// be no larger than the corresponding axis lengths of `source`.
     axis_lens: &'a D,
 }
 
