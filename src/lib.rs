@@ -877,9 +877,7 @@ pub unsafe trait NdAccess {
     /// Returns whether the array is empty (has no elements).
     fn is_empty(&self) -> bool {
         self.shape()
-            .slice()
-            .iter()
-            .fold(false, |is_empty, &len| is_empty | (len == 0))
+            .foldv(false, |is_empty, len| is_empty | (len == 0))
     }
 
     /// Returns the number of axes in the producer.
@@ -915,10 +913,7 @@ impl<P: NdProducer> Iter<P> {
     fn new(producer: P, axes: P::Dim) -> Self {
         let source = producer.into_source();
         assert_valid_unique_axes::<P::Dim>(source.ndim(), axes.slice());
-        let mut axis_lens = axes.clone();
-        for x in axis_lens.slice_mut() {
-            *x = source.len_of(Axis(*x));
-        }
+        let axis_lens = axes.mapv(|axis| source.len_of(Axis(axis)));
         let ptr_idx = match (source.first_ptr(), P::Dim::first_index(&axis_lens)) {
             (Some(ptr), Some(idx)) => Some((ptr, idx)),
             _ => None,
@@ -1222,6 +1217,52 @@ pub(crate) fn assert_valid_unique_axes<D: Dimension>(ndim: usize, axes: &[usize]
             "Each axis must be listed no more than once."
         );
         usage_counts[axis] = 1;
+    }
+}
+
+/// Extension methods for `Dimension` types.
+pub(crate) trait DimensionExt {
+    /// Applies the fold to the values and returns the result.
+    fn foldv<F, B>(&self, init: B, f: F) -> B
+    where
+        F: FnMut(B, usize) -> B;
+
+    /// Applies `f` to each element by value and creates a new instance with
+    /// the results.
+    fn mapv<F>(&self, f: F) -> Self
+    where
+        F: FnMut(usize) -> usize;
+
+    /// Calls `f` for each element by value.
+    fn visitv<F>(&self, f: F)
+    where
+        F: FnMut(usize);
+}
+
+impl<D: Dimension> DimensionExt for D {
+    fn foldv<F, B>(&self, init: B, f: F) -> B
+    where
+        F: FnMut(B, usize) -> B,
+    {
+        self.slice().iter().cloned().fold(init, f)
+    }
+
+    fn mapv<F>(&self, mut f: F) -> Self
+    where
+        F: FnMut(usize) -> usize,
+    {
+        let mut out = Self::zeros(self.ndim());
+        for (o, &i) in izip!(out.slice_mut(), self.slice()) {
+            *o = f(i);
+        }
+        out
+    }
+
+    fn visitv<F>(&self, f: F)
+    where
+        F: FnMut(usize),
+    {
+        self.slice().iter().cloned().for_each(f)
     }
 }
 

@@ -2,7 +2,7 @@
 
 use crate::{
     assert_valid_unique_axes, dim_traits::SubDim, optimize::optimize_any_ord_axes, CanMerge,
-    IntoNdProducerWithShape, IterBorrowed, NdAccess, NdProducer, NdReshape, NdSource,
+    DimensionExt, IntoNdProducerWithShape, IterBorrowed, NdAccess, NdProducer, NdReshape, NdSource,
 };
 use itertools::izip;
 use ndarray::{Axis, Dimension};
@@ -225,14 +225,9 @@ where
         // `outer_to_inner`.
         {
             let mut axes_used = S::Dim::zeros(inner.ndim());
-            fold_axes.slice().iter().for_each(|&ax| axes_used[ax] += 1);
-            outer_to_inner
-                .slice()
-                .iter()
-                .for_each(|&ax| axes_used[ax] += 1);
-            for &usage_count in axes_used.slice() {
-                assert_eq!(usage_count, 1);
-            }
+            fold_axes.visitv(|ax| axes_used[ax] += 1);
+            outer_to_inner.visitv(|ax| axes_used[ax] += 1);
+            axes_used.visitv(|usage_count| assert_eq!(usage_count, 1));
         }
         unsafe { FoldAxesSource::new_unchecked(inner, fold_axes, outer_to_inner, init, f) }
     }
