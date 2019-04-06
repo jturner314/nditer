@@ -942,6 +942,55 @@ struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     axis_lens: &'a D,
 }
 
+impl<'a, S: 'a + NdSource, D: 'a + Dimension> IterBorrowed<'a, S, D> {
+    /// Creates an `IterBorrowed` from its raw parts.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the following:
+    ///
+    /// * The new iterator can never read the same location from the source as
+    ///   anything else (to make sure the constraints are satisfied for
+    ///   `read_once_unchecked`).
+    ///
+    /// * The index is a valid index within the axis lengths.
+    ///
+    /// * The pointer is at a valid location within the source, and all
+    ///   locations reachable by offsetting the pointer to all remaining
+    ///   indices within the `axis_lens` are also valid locations.
+    ///
+    /// * The `axes` are unique, in-bounds axes for `source`.
+    ///
+    /// * The `axis_lens` are no larger than the axis lengths of the `source`
+    ///   for the given `axes`, and all axis lengths are `<= isize::MAX`.
+    unsafe fn from_raw_parts(
+        source: &'a mut S,
+        ptr_idx: Option<(S::Ptr, D)>,
+        axes: &'a D,
+        axis_lens: &'a D,
+    ) -> Self {
+        // A few sanity checks.
+        if cfg!(debug_assertions) {
+            assert_valid_unique_axes::<D>(source.ndim(), axes.slice());
+            for (&ax, &axis_len) in izip!(axes.slice(), axis_lens.slice()) {
+                debug_assert!(axis_len <= source.len_of(Axis(ax)));
+                debug_assert!(axis_len <= std::isize::MAX as usize);
+            }
+            if let Some((_, idx)) = &ptr_idx {
+                for (&i, &axis_len) in izip!(idx.slice(), axis_lens.slice()) {
+                    debug_assert!(i < axis_len);
+                }
+            }
+        }
+        IterBorrowed {
+            source,
+            ptr_idx,
+            axes,
+            axis_lens,
+        }
+    }
+}
+
 macro_rules! impl_iter {
     (($($generics:tt)*), $self:ty, $item:ty) => {
         impl<$($generics)*> $self {
