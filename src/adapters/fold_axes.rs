@@ -1,8 +1,9 @@
 // TODO: check that behavior is correct with zero-length axes
 
 use crate::{
-    assert_valid_unique_axes, dim_traits::SubDim, optimize::optimize_any_ord_axes, CanMerge,
-    DimensionExt, IntoNdProducerWithShape, IterBorrowed, NdAccess, NdProducer, NdReshape, NdSource,
+    assert_valid_unique_axes, dim_traits::SubDim, iter::IterBorrowed,
+    optimize::optimize_any_ord_axes, CanMerge, DimensionExt, IntoNdProducerWithShape, NdAccess,
+    NdProducer, NdReshape, NdSource,
 };
 use itertools::izip;
 use ndarray::{Axis, Dimension};
