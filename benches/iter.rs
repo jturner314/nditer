@@ -3,7 +3,7 @@ use ndarray::prelude::*;
 use ndarray::Zip;
 use nditer::{ArrayBaseExt, IntoNdProducer, NdProducer};
 use rand::distributions::Uniform;
-use rand::{thread_rng, Rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
 
 fn rand_shape_ix3(approx_size: usize) -> [usize; 3] {
     let unnorm_lens: Vec<_> = thread_rng()
@@ -220,7 +220,7 @@ fn equal_lengths_permuted_ix4(c: &mut Criterion) {
             bencher.iter_with_setup(
                 || {
                     let mut order = [0, 1, 2, 3];
-                    thread_rng().shuffle(&mut order);
+                    order.shuffle(&mut thread_rng());
                     arr.view().permuted_axes(order)
                 },
                 |view| {
@@ -237,7 +237,7 @@ fn equal_lengths_permuted_ix4(c: &mut Criterion) {
         bencher.iter_with_setup(
             || {
                 let mut order = [0, 1, 2, 3];
-                thread_rng().shuffle(&mut order);
+                order.shuffle(&mut thread_rng());
                 arr.view().permuted_axes(order)
             },
             |view| {
@@ -288,7 +288,7 @@ fn equal_lengths_permuted_ixdyn(c: &mut Criterion) {
             bencher.iter_with_setup(
                 || {
                     let mut order = vec![0, 1, 2, 3, 4];
-                    thread_rng().shuffle(&mut order);
+                    order.shuffle(&mut thread_rng());
                     arr.view().permuted_axes(order)
                 },
                 |view| {
@@ -305,7 +305,7 @@ fn equal_lengths_permuted_ixdyn(c: &mut Criterion) {
         bencher.iter_with_setup(
             || {
                 let mut order = vec![0, 1, 2, 3, 4];
-                thread_rng().shuffle(&mut order);
+                order.shuffle(&mut thread_rng());
                 arr.view().permuted_axes(order)
             },
             |view| {
