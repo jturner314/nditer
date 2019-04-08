@@ -59,6 +59,11 @@ pub(crate) struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     /// Note that the order of the elements in the index matches the order of
     /// `axes`. For example, `index[3]` is the index for axis `Axis(axes[3])`,
     /// not `Axis(3)`.
+    ///
+    /// Also note that the index may not be equivalent to the corresponding
+    /// index of the underlying source (for example when iterating over only a
+    /// portion of the source); the purpose of the index is to keep track of
+    /// the progress of the iterator.
     ptr_idx: Option<(S::Ptr, D)>,
     /// Axes to iterate over (outermost axis first).
     axes: &'a D,
@@ -67,6 +72,9 @@ pub(crate) struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     /// All axis lengths must be `<= isize::MAX` so that indices can be safely
     /// cast to `isize` without overflow. Additionally, all axis lengths must
     /// be no larger than the corresponding axis lengths of `source`.
+    ///
+    /// Note that the axis lengths may be less than the corresponding axis
+    /// lengths of the underlying source.
     axis_lens: &'a D,
 }
 
