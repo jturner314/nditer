@@ -46,13 +46,9 @@ where
     /// axis:
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::{array, Axis};
     /// use nditer::ArrayBaseExt;
     ///
-    /// # fn main() {
     /// let mut arr = array![
     ///     [[1, 2], [3, 4], [5, 6]],
     ///     [[7, 8], [9, 10], [11, 12]],
@@ -65,7 +61,6 @@ where
     ///         [[7, 8], [16, 18], [27, 30]],
     ///     ],
     /// );
-    /// # }
     /// ```
     fn accumulate_axis_inplace<F>(&mut self, axis: Axis, f: F)
     where
