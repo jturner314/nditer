@@ -115,18 +115,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::{array, Array2, ShapeBuilder};
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let mut arr = Array2::zeros((2, 2).f());
     /// arr.assign(&array![[1, 2], [3, 4]]);
     /// let elems: Vec<_> = arr.producer().into_iter().cloned().collect();
     /// assert_eq!(elems, vec![1, 2, 3, 4]);
-    /// # }
     /// ```
     fn into_iter(mut self) -> Iter<Self> {
         let axes = optimize::optimize_same_ord(&mut self);
@@ -159,18 +154,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// inverting an axis will allow the axes to be merged.
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::{array, Axis};
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let mut a = array![[3, 4], [1, 2]];
     /// a.invert_axis(Axis(0));
     /// assert_eq!(a, array![[1, 2], [3, 4]]);
     /// assert_eq!(a.strides(), &[-2, 1]);
-    /// # }
     /// ```
     ///
     /// Without any constraints, the optimizer inverts axis 0 in this case so
@@ -180,13 +170,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// `1`, and element `4` occurs before element `2`.
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// # use ndarray::{array, Axis};
     /// # use nditer::{ArrayBaseExt, NdProducer};
     /// #
-    /// # fn main() {
     /// # let mut a = array![[3, 4], [1, 2]];
     /// # a.invert_axis(Axis(0));
     /// # assert_eq!(a, array![[1, 2], [3, 4]]);
@@ -197,7 +183,6 @@ pub trait NdProducer: NdReshape + Sized {
     ///     .into_iter_any_ord()
     ///     .collect();
     /// assert_eq!(allow_invert, vec![3, 4, 1, 2]);
-    /// # }
     /// ```
     ///
     /// Let's forbid axis 0 from being inverted. In this case, the optimizer
@@ -209,13 +194,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// `3`, and element `2` is guaranteed to occur before element `4`.
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// # use ndarray::{array, Axis};
     /// # use nditer::{ArrayBaseExt, NdProducer};
     /// #
-    /// # fn main() {
     /// # let mut a = array![[3, 4], [1, 2]];
     /// # a.invert_axis(Axis(0));
     /// # assert_eq!(a, array![[1, 2], [3, 4]]);
@@ -227,7 +208,6 @@ pub trait NdProducer: NdReshape + Sized {
     ///     .into_iter_any_ord()
     ///     .collect();
     /// assert_eq!(forbid_invert, vec![2, 1, 4, 3]);
-    /// # }
     /// ```
     fn forbid_invert_axes<E: IntoDimension>(self, axes: E) -> ForbidInvertAxes<Self> {
         ForbidInvertAxes::new(self, axes.into_dimension().slice().iter().cloned())
@@ -240,18 +220,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let a = array![[3, 7], [9, 10]];
     /// let b = array![[1, 2], [3, 4]];
     /// let difference = a.producer().zip(&b).map(|(a, b)| a - b).collect_array();
     /// assert_eq!(difference, a - b);
-    /// # }
     /// ```
     fn zip<U>(self, other: U) -> Zip<Self, U::Producer>
     where
@@ -274,13 +249,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::{array, Ix2, Ix3};
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let a = array![[1], [2]];
     /// let b = a.producer().broadcast((2, 1), (3, 4, 2))
     ///     .expect("Broadcast shape must be compatible")
@@ -294,7 +265,6 @@ pub trait NdProducer: NdReshape + Sized {
     ///         [[1, 2], [1, 2], [1, 2], [1, 2]],
     ///     ],
     /// );
-    /// # }
     /// ```
     fn broadcast<E: IntoDimension>(
         self,
@@ -326,20 +296,15 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[1, 2], [3, 4]];
     /// let squared = arr
     ///     .producer()
     ///     .map(|&x| x * x)
     ///     .collect_array();
     /// assert_eq!(squared, array![[1, 4], [9, 16]]);
-    /// # }
     /// ```
     #[must_use = "`Map` must be consumed for the mapping to be applied."]
     fn map<B, F>(self, f: F) -> Map<Self, F>
@@ -355,17 +320,12 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let mut arr = array![[1, 2], [3, 4]];
     /// arr.producer_mut().for_each(|x| *x += 1);
     /// assert_eq!(arr, array![[2, 3], [4, 5]]);
-    /// # }
     /// ```
     fn for_each<F>(self, mut f: F)
     where
@@ -380,18 +340,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[0, 1], [1, 2]];
     /// arr.producer()
     ///     .indexed()
     ///     .for_each(|((row, col), &x)| assert_eq!(row + col, x));
-    /// # }
     /// ```
     fn indexed(self) -> IndexedProducer<Self, Self::Dim> {
         IndexedProducer::new(self)
@@ -411,18 +366,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let mut arr = array![[0, 1], [1, 2]];
     /// arr.producer_mut()
     ///     .inspect(|x| println!("Adding 1 to {}", x))
     ///     .for_each(|x| *x += 1);
-    /// # }
     /// ```
     #[must_use = "`Inspect` must be consumed for iteration to occur."]
     fn inspect<F>(self, f: F) -> Inspect<Self, F>
@@ -440,17 +390,12 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[0, 1], [2, 3]];
     /// let sum_sq = arr.producer().fold(0, |acc, &x| acc + x * x);
     /// assert_eq!(sum_sq, arr.fold(0, |acc, &x| acc + x * x));
-    /// # }
     /// ```
     fn fold<B, F>(self, init: B, f: F) -> B
     where
@@ -466,13 +411,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer, into_repeat_with};
     ///
-    /// # fn main() {
     /// let arr = array![
     ///     [[1, 2, 3], [4, 5, 6]],
     ///     [[7, 8, 9], [10, 11, 12]],
@@ -483,7 +424,6 @@ pub trait NdProducer: NdReshape + Sized {
     ///     .fold_axes((0, 2), zeros, |acc, &elem| acc + elem)
     ///     .collect_array();
     /// assert_eq!(sum, array![1 + 2 + 3 + 7 + 8 + 9, 4 + 5 + 6 + 10 + 11 + 12]);
-    /// # }
     /// ```
     #[must_use = "`FoldAxesProducer` must be consumed for folding to occur."]
     fn fold_axes<T, I, F>(
@@ -515,17 +455,12 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[1, 2], [3, 4]];
     /// let cloned = arr.producer().cloned().collect_array();
     /// assert_eq!(cloned, arr);
-    /// # }
     /// ```
     fn cloned<'a, T>(self) -> Cloned<Self>
     where
@@ -544,13 +479,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::{array, Axis};
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]];
     /// let indices = array![0, 1, 3, 5];
     /// let selected_squared = arr
@@ -559,7 +490,6 @@ pub trait NdProducer: NdReshape + Sized {
     ///     .map(|x| x * x)
     ///     .collect_array();
     /// assert_eq!(selected_squared, array![[1, 4, 16, 36], [49, 64, 100, 144]]);
-    /// # }
     /// ```
     fn select_indices_axis<'a, S>(
         self,
@@ -578,17 +508,12 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[1, 2], [3, 4]];
     /// let collected = arr.producer().collect_array();
     /// assert_eq!(collected, array![[&1, &2], [&3, &4]]);
-    /// # }
     /// ```
     fn collect_array(mut self) -> Array<Self::Item, Self::Dim> {
         let (iter_axes, Layout { shape, strides, .. }) =
@@ -630,17 +555,12 @@ pub trait NdProducer: NdReshape + Sized {
     /// # Example
     ///
     /// ```
-    /// # extern crate ndarray;
-    /// # extern crate nditer;
-    /// #
     /// use ndarray::array;
     /// use nditer::{ArrayBaseExt, NdProducer};
     ///
-    /// # fn main() {
     /// let arr = array![[1., 2.], [3., 4.]];
     /// let sum = arr.producer().cloned().pairwise_sum();
     /// assert_eq!(sum, 10.);
-    /// # }
     /// ```
     // Implementation note: This is explicitly not a method on `Iter` because
     // it relies on splitting over the source, and the splitting procedure
