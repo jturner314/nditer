@@ -12,7 +12,7 @@ where
     T: NdReshape + ?Sized,
 {
     let ndim = producer.ndim();
-    if ndim == 0 {
+    if ndim <= 1 {
         return T::Dim::zeros(ndim);
     }
     for axis in 0..(ndim - 1) {
@@ -78,14 +78,41 @@ where
     T: NdReshape + ?Sized,
     D: Dimension,
 {
-    if axes.ndim() <= 1 {
-        return;
-    }
-
     // TODO: Should there be a minimum producer size for the more advanced (and
     // costly) optimizations?
 
-    // TODO: specialize for ndim == 2 and maybe 3.
+    // TODO: specialize for ndim == 3?
+
+    let ndim = axes.ndim();
+    if ndim <= 1 {
+        return;
+    } else if ndim == 2 {
+        // Reorder axes according to shape and strides.
+        let abs_strides = producer.approx_abs_strides();
+        if abs_strides[axes[0]] < abs_strides[axes[1]] && producer.len_of(Axis(axes[0])) > 1 {
+            axes.slice_mut().swap(0, 1);
+        }
+
+        // Try merging axes.
+        let take = Axis(axes[0]);
+        let into = Axis(axes[1]);
+        match producer.can_merge_axes(take, into) {
+            CanMerge::IfUnchanged | CanMerge::IfEither => {
+                producer.merge_axes(take, into);
+            }
+            CanMerge::IfInverted if producer.can_invert_axis(take) => {
+                producer.invert_axis(take);
+                producer.merge_axes(take, into);
+            }
+            CanMerge::IfInverted if producer.can_invert_axis(into) => {
+                producer.invert_axis(into);
+                producer.merge_axes(take, into);
+            }
+            CanMerge::IfInverted | CanMerge::Never => {}
+        }
+
+        return;
+    }
 
     // Determine initial order of axes. Sort axes by descending absolute stride
     // (except for axes with length <= 1, which are moved to the left).
@@ -109,7 +136,7 @@ where
         .enumerate()
         .find(|(_, &ax)| producer.len_of(Axis(ax)) > 1)
     {
-        for i in (rest + 1)..axes.ndim() {
+        for i in (rest + 1)..ndim {
             let mut t = rest;
             while t < i {
                 let take = Axis(axes[t]);

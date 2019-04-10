@@ -1,8 +1,9 @@
 // TODO: check that behavior is correct with zero-length axes
 
 use crate::{
-    assert_valid_unique_axes, dim_traits::SubDim, optimize::optimize_any_ord_axes, CanMerge,
-    IntoNdProducerWithShape, IterBorrowed, NdAccess, NdProducer, NdReshape, NdSource,
+    assert_valid_unique_axes, dim_traits::SubDim, iter::IterBorrowed,
+    optimize::optimize_any_ord_axes, CanMerge, DimensionExt, IntoNdProducerWithShape, NdAccess,
+    NdProducer, NdReshape, NdSource,
 };
 use itertools::izip;
 use ndarray::{Axis, Dimension};
@@ -225,15 +226,14 @@ where
         // `outer_to_inner`.
         {
             let mut axes_used = S::Dim::zeros(inner.ndim());
-            fold_axes.slice().iter().for_each(|&ax| axes_used[ax] += 1);
-            outer_to_inner
-                .slice()
-                .iter()
-                .for_each(|&ax| axes_used[ax] += 1);
-            for &usage_count in axes_used.slice() {
-                assert_eq!(usage_count, 1);
-            }
+            fold_axes.visitv(|ax| axes_used[ax] += 1);
+            outer_to_inner.visitv(|ax| axes_used[ax] += 1);
+            axes_used.visitv(|usage_count| assert_eq!(usage_count, 1));
         }
+        // Check that the lengths of all fold axes fit in `isize`. (See the
+        // constraints of `IterBorrowed::from_raw_parts`, which is called in
+        // `read_once_unchecked`.)
+        fold_axes.visitv(|ax| assert!(inner.len_of(Axis(ax)) <= std::isize::MAX as usize));
         unsafe { FoldAxesSource::new_unchecked(inner, fold_axes, outer_to_inner, init, f) }
     }
 
@@ -277,12 +277,12 @@ where
             .fold_first_index
             .clone()
             .map(|idx| (ptr_inner.clone(), idx));
-        IterBorrowed {
-            source: &mut self.inner,
+        IterBorrowed::from_raw_parts(
+            &mut self.inner,
             ptr_idx,
-            axes: &self.fold_axes,
-            axis_lens: &self.fold_axis_lens,
-        }
+            &self.fold_axes,
+            &self.fold_axis_lens,
+        )
         .fold(init, &mut self.f)
     }
 }
