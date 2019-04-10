@@ -622,10 +622,29 @@ pub trait NdProducer: NdReshape + Sized {
         out
     }
 
-    /// Compute the sum of the elements in a pairwise fashion.
-    // This is explicitly not a method on `Iter` because it relies on splitting
-    // the iterator, and the splitting procedure assumes that the iterator has
-    // not been partially iterated over.
+    /// Computes the sum of the elements in a pairwise fashion.
+    ///
+    /// Note that this isn't strictly a pairwise sum; at the lowest level of
+    /// the tree, at most `MAX_SEQUENTIAL` elements are added in sequence.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # extern crate ndarray;
+    /// # extern crate nditer;
+    /// #
+    /// use ndarray::array;
+    /// use nditer::{ArrayBaseExt, NdProducer};
+    ///
+    /// # fn main() {
+    /// let arr = array![[1., 2.], [3., 4.]];
+    /// let sum = arr.producer().cloned().pairwise_sum();
+    /// assert_eq!(sum, 10.);
+    /// # }
+    /// ```
+    // Implementation note: This is explicitly not a method on `Iter` because
+    // it relies on splitting over the source, and the splitting procedure
+    // assumes that the iterator has not been partially iterated over.
     fn pairwise_sum(self) -> Self::Item
     where
         Self::Item: Zero + Clone + std::ops::Add<Output = Self::Item>,
