@@ -21,7 +21,7 @@ name = "iter"
 harness = false
 
 [[bench]]
-name = "sum"
+name = "pairwise_sum"
 harness = false
 
 [patch.crates-io]
