@@ -11,15 +11,17 @@
 
 #![deny(missing_docs)]
 
+pub use self::adapters::{into_repeat_with, repeat_with};
+pub use self::axes::{axes, axes_all, axes_none, axes_except, IntoAxesFor};
 pub use self::dim_traits::SubDim;
 pub use self::impl_ndarray::ArrayBaseExt;
 pub use self::iter::Iter;
-pub use adapters::{into_repeat_with, repeat_with};
 
 use self::adapters::{
     BroadcastProducer, Cloned, FoldAxesProducer, ForbidInvertAxes, IndexedProducer, Inspect, Map,
     SelectIndicesAxis, Zip,
 };
+use self::axes::AxesFor;
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
 use ndarray::{Array, ArrayBase, Axis, Data, Dimension, IntoDimension, Ix1, ShapeBuilder};
@@ -155,7 +157,7 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// use ndarray::{array, Axis};
-    /// use nditer::{ArrayBaseExt, NdProducer};
+    /// use nditer::{axes, ArrayBaseExt, NdProducer};
     ///
     /// let mut a = array![[3, 4], [1, 2]];
     /// a.invert_axis(Axis(0));
@@ -171,7 +173,7 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// # use ndarray::{array, Axis};
-    /// # use nditer::{ArrayBaseExt, NdProducer};
+    /// # use nditer::{axes, ArrayBaseExt, NdProducer};
     /// #
     /// # let mut a = array![[3, 4], [1, 2]];
     /// # a.invert_axis(Axis(0));
@@ -195,7 +197,7 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// # use ndarray::{array, Axis};
-    /// # use nditer::{ArrayBaseExt, NdProducer};
+    /// # use nditer::{axes, ArrayBaseExt, NdProducer};
     /// #
     /// # let mut a = array![[3, 4], [1, 2]];
     /// # a.invert_axis(Axis(0));
@@ -204,13 +206,14 @@ pub trait NdProducer: NdReshape + Sized {
     /// let forbid_invert: Vec<_> = a
     ///     .producer()
     ///     .cloned()
-    ///     .forbid_invert_axes(0)
+    ///     .forbid_invert_axes(axes(0))
     ///     .into_iter_any_ord()
     ///     .collect();
     /// assert_eq!(forbid_invert, vec![2, 1, 4, 3]);
     /// ```
-    fn forbid_invert_axes<E: IntoDimension>(self, axes: E) -> ForbidInvertAxes<Self> {
-        ForbidInvertAxes::new(self, axes.into_dimension().slice().iter().cloned())
+    fn forbid_invert_axes(self, axes: impl IntoAxesFor<Self::Dim>) -> ForbidInvertAxes<Self> {
+        let axes = axes.into_axes_for(self.ndim());
+        ForbidInvertAxes::new(self, axes.slice().iter().cloned())
     }
 
     /// Zips up two producers into a single producer of pairs.
@@ -250,10 +253,10 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// use ndarray::{array, Ix2, Ix3};
-    /// use nditer::{ArrayBaseExt, NdProducer};
+    /// use nditer::{axes, ArrayBaseExt, NdProducer};
     ///
     /// let a = array![[1], [2]];
-    /// let b = a.producer().broadcast((2, 1), (3, 4, 2))
+    /// let b = a.producer().broadcast(axes((2, 1)), (3, 4, 2))
     ///     .expect("Broadcast shape must be compatible")
     ///     .cloned()
     ///     .collect_array();
@@ -268,10 +271,10 @@ pub trait NdProducer: NdReshape + Sized {
     /// ```
     fn broadcast<E: IntoDimension>(
         self,
-        axes_mapping: impl IntoDimension<Dim = Self::Dim>,
+        axes_mapping: impl IntoAxesFor<E::Dim, Axes = Self::Dim>,
         shape: E,
     ) -> Option<BroadcastProducer<Self, E::Dim>> {
-        BroadcastProducer::try_new(self, axes_mapping.into_dimension(), shape.into_dimension())
+        BroadcastProducer::try_new(self, axes_mapping, shape.into_dimension())
     }
 
     /// Takes a closure and creates a producer which calls that closure on each
@@ -412,7 +415,7 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// use ndarray::array;
-    /// use nditer::{ArrayBaseExt, NdProducer, into_repeat_with};
+    /// use nditer::{axes, ArrayBaseExt, NdProducer, into_repeat_with};
     ///
     /// let arr = array![
     ///     [[1, 2, 3], [4, 5, 6]],
@@ -421,7 +424,7 @@ pub trait NdProducer: NdReshape + Sized {
     /// let zeros = into_repeat_with(|| 0);
     /// let sum = arr
     ///     .producer()
-    ///     .fold_axes((0, 2), zeros, |acc, &elem| acc + elem)
+    ///     .fold_axes(axes((0, 2)), zeros, |acc, &elem| acc + elem)
     ///     .collect_array();
     /// assert_eq!(sum, array![1 + 2 + 3 + 7 + 8 + 9, 4 + 5 + 6 + 10 + 11 + 12]);
     /// ```
@@ -431,17 +434,16 @@ pub trait NdProducer: NdReshape + Sized {
         fold_axes: T,
         init: I,
         f: F,
-    ) -> FoldAxesProducer<Self, T::Dim, I::Producer, F>
+    ) -> FoldAxesProducer<Self, T::Axes, I::Producer, F>
     where
-        T: IntoDimension,
-        I: IntoNdProducerWithShape<<Self::Dim as SubDim<T::Dim>>::Out>,
+        T: IntoAxesFor<Self::Dim>,
+        I: IntoNdProducerWithShape<<T::IntoOthers as IntoAxesFor<Self::Dim>>::Axes>,
         F: FnMut(
             <I::Producer as NdProducer>::Item,
             Self::Item,
         ) -> <I::Producer as NdProducer>::Item,
-        Self::Dim: SubDim<T::Dim>,
     {
-        FoldAxesProducer::new(self, fold_axes.into_dimension(), init, f)
+        FoldAxesProducer::new(self, fold_axes, init, f)
     }
 
     /// Creates a producer which `clone`s all of its elements.
@@ -962,6 +964,7 @@ impl<D: Dimension> DimensionExt for D {
 }
 
 mod adapters;
+mod axes;
 mod dim_traits;
 mod impl_ndarray;
 mod iter;

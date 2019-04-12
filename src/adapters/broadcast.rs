@@ -1,6 +1,4 @@
-use crate::{
-    assert_valid_unique_axes, CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat,
-};
+use crate::{CanMerge, IntoAxesFor, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
 use ndarray::{Axis, Dimension};
 
 /// A wrapper that broadcasts a producer to a larger shape.
@@ -49,10 +47,13 @@ where
     D: Dimension,
 {
     /// Creates a new producer that broadcasts `inner` to a larger shape.
-    pub(crate) fn try_new(inner: T, axes_mapping: T::Dim, shape: D) -> Option<Self> {
-        // Check validity of `axes_mapping`.
-        assert_eq!(inner.ndim(), axes_mapping.ndim());
-        assert_valid_unique_axes::<D>(shape.ndim(), axes_mapping.slice());
+    pub(crate) fn try_new(
+        inner: T,
+        axes_mapping: impl IntoAxesFor<D, Axes = T::Dim>,
+        shape: D,
+    ) -> Option<Self> {
+        let axes_mapping = axes_mapping.into_axes_for(shape.ndim());
+        assert_eq!(inner.ndim(), axes_mapping.num_axes());
         // Compute `outer_to_inner` and `pass_through`, and check that the
         // lengths of passed-through axes match `shape`.
         let mut outer_to_inner = D::zeros(shape.ndim());
