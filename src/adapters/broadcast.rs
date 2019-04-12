@@ -265,7 +265,8 @@ where
 
     fn is_axis_contiguous(&self, axis: Axis) -> bool {
         if self.pass_through[axis.index()] != 0 {
-            self.inner.is_axis_contiguous(axis)
+            let inner_axis = Axis(self.outer_to_inner[axis.index()]);
+            self.inner.is_axis_contiguous(inner_axis)
         } else {
             true
         }
