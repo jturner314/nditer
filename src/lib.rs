@@ -25,7 +25,7 @@ use self::axes::AxesFor;
 use self::errors::BroadcastError;
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
-use ndarray::{Array, ArrayBase, Axis, Data, Dimension, IntoDimension, Ix1, ShapeBuilder};
+use ndarray::{Array, ArrayBase, Axis, Data, DataMut, Dimension, IntoDimension, Ix1, ShapeBuilder};
 use num_traits::Zero;
 
 /// Conversion into an `NdProducer`.
@@ -445,6 +445,67 @@ pub trait NdProducer: NdReshape + Sized {
         ) -> <I::Producer as NdProducer>::Item,
     {
         FoldAxesProducer::new(self, fold_axes, init, f)
+    }
+
+    /// A producer that folds over the given axes, modifying the accumulator
+    /// in-place.
+    ///
+    /// **Note**: The folder visits the elements in arbitrary order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::{array, Array1, Array2, Axis};
+    /// use nditer::{axes, axes_except, ArrayBaseExt, NdProducer};
+    ///
+    /// let data = array![
+    ///     [[1, 2, 3], [4, 5, 6]],
+    ///     [[7, 8, 9], [10, 11, 12]],
+    /// ];
+    /// assert_eq!(data.shape(), &[2, 2, 3]);
+    ///
+    /// let mut a = Array1::zeros(data.len_of(Axis(1)));
+    /// assert_eq!(a.shape(), &[2]);
+    /// data.producer().fold_inplace_axes(axes((0, 2)), &mut a, |acc, &elem| *acc += elem);
+    /// assert_eq!(a, array![1 + 2 + 3 + 7 + 8 + 9, 4 + 5 + 6 + 10 + 11 + 12]);
+    ///
+    /// let mut b = Array2::zeros((data.len_of(Axis(2)), data.len_of(Axis(0))));
+    /// assert_eq!(b.shape(), &[3, 2]);
+    /// data.producer().fold_inplace_axes(axes_except((2, 0)), &mut b, |acc, &elem| *acc += elem);
+    /// assert_eq!(b, array![
+    ///     [1 + 4, 7 + 10],
+    ///     [2 + 5, 8 + 11],
+    ///     [3 + 6, 9 + 12],
+    /// ]);
+    /// ```
+    fn fold_inplace_axes<T, S, F>(
+        self,
+        fold_axes: T,
+        accumulator: &mut ArrayBase<S, <T::IntoOthers as IntoAxesFor<Self::Dim>>::Axes>,
+        mut f: F,
+    ) -> Result<(), BroadcastError>
+    where
+        T: IntoAxesFor<Self::Dim>,
+        S: DataMut,
+        F: FnMut(&mut S::Elem, Self::Item),
+    {
+        let remaining_axes = fold_axes.into_others();
+        Ok(accumulator
+            .raw_producer_mut()
+            .broadcast(remaining_axes, self.shape())?
+            .zip(self)
+            .for_each(move |(acc_ptr, item)| {
+                // We can safely access mutable references to elements in the
+                // accumulator because we have a mutable borrow of it and `S`
+                // implements `DataMut`. It is safe to broadcast the accumulator
+                // and dereference elements because the lifetimes of the borrows
+                // of the elements are shorter than the borrow of the
+                // accumulator and the lifetimes of the borrows of the elements
+                // don't overlap each other. (The lifetime of each borrow lasts
+                // only for the duration of the call to the closure.)
+                let acc_ref = unsafe { &mut *acc_ptr };
+                f(acc_ref, item)
+            }))
     }
 
     /// Creates a producer which `clone`s all of its elements.
