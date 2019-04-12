@@ -1,5 +1,6 @@
 use crate::{
-    assert_valid_unique_axes, CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat,
+    errors::BroadcastError, CanMerge, IntoAxesFor, NdAccess, NdProducer, NdReshape, NdSource,
+    NdSourceRepeat,
 };
 use ndarray::{Axis, Dimension};
 
@@ -49,10 +50,13 @@ where
     D: Dimension,
 {
     /// Creates a new producer that broadcasts `inner` to a larger shape.
-    pub(crate) fn try_new(inner: T, axes_mapping: T::Dim, shape: D) -> Option<Self> {
-        // Check validity of `axes_mapping`.
-        assert_eq!(inner.ndim(), axes_mapping.ndim());
-        assert_valid_unique_axes::<D>(shape.ndim(), axes_mapping.slice());
+    pub(crate) fn try_new(
+        inner: T,
+        axes_mapping: impl IntoAxesFor<D, Axes = T::Dim>,
+        shape: D,
+    ) -> Result<Self, BroadcastError> {
+        let axes_mapping = axes_mapping.into_axes_for(shape.ndim());
+        assert_eq!(inner.ndim(), axes_mapping.num_axes());
         // Compute `outer_to_inner` and `pass_through`, and check that the
         // lengths of passed-through axes match `shape`.
         let mut outer_to_inner = D::zeros(shape.ndim());
@@ -62,14 +66,14 @@ where
             let inner_len = inner.len_of(Axis(inner_ax));
             if inner_len != 1 {
                 if shape[outer_ax] != inner_len {
-                    return None;
+                    return Err(BroadcastError::new(&inner.shape(), &shape, &axes_mapping));
                 }
                 pass_through[outer_ax] = 1;
             }
         }
-        Some(BroadcastProducer {
+        Ok(BroadcastProducer {
             inner,
-            inner_to_outer: axes_mapping,
+            inner_to_outer: axes_mapping.into_inner(),
             outer_to_inner,
             pass_through,
             shape,
@@ -265,7 +269,8 @@ where
 
     fn is_axis_contiguous(&self, axis: Axis) -> bool {
         if self.pass_through[axis.index()] != 0 {
-            self.inner.is_axis_contiguous(axis)
+            let inner_axis = Axis(self.outer_to_inner[axis.index()]);
+            self.inner.is_axis_contiguous(inner_axis)
         } else {
             true
         }

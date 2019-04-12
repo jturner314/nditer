@@ -1,9 +1,8 @@
 // TODO: check that behavior is correct with zero-length axes
 
 use crate::{
-    assert_valid_unique_axes, dim_traits::SubDim, iter::IterBorrowed,
-    optimize::optimize_any_ord_axes, CanMerge, DimensionExt, IntoNdProducerWithShape, NdAccess,
-    NdProducer, NdReshape, NdSource,
+    iter::IterBorrowed, optimize::optimize_any_ord_axes, AxesFor, CanMerge, DimensionExt,
+    IntoAxesFor, IntoNdProducerWithShape, NdAccess, NdProducer, NdReshape, NdSource,
 };
 use itertools::izip;
 use ndarray::{Axis, Dimension};
@@ -13,14 +12,13 @@ pub struct FoldAxesProducer<P, Df, I, F>
 where
     P: NdReshape,
     Df: Dimension,
-    P::Dim: SubDim<Df, Out = I::Dim>,
     I: NdReshape,
 {
     inner: P,
     /// Axes (of the `inner` source) that are being folded over.
-    fold_axes: Df,
+    fold_axes: AxesFor<P::Dim, Df>,
     /// Mapping of "outer" axis to corresponding axis of `inner`.
-    outer_to_inner: I::Dim,
+    outer_to_inner: AxesFor<P::Dim, I::Dim>,
     /// Source of init values for fold.
     init: I,
     f: F,
@@ -30,41 +28,25 @@ impl<P, Df, I, F> FoldAxesProducer<P, Df, I, F>
 where
     P: NdProducer,
     Df: Dimension,
-    P::Dim: SubDim<Df, Out = I::Dim>,
     I: NdProducer,
     F: FnMut(I::Item, P::Item) -> I::Item,
 {
     /// Creates a new `FoldAxesProducer`.
     ///
-    /// The order of `fold_axes` doesn't matter because folding may be
-    /// performed in an arbitrary order. The order of the remaining (not
-    /// folded) axes is preserved.
-    ///
     /// **Panics** if any of `fold_axes` are out of bounds or if an axis is
     /// repeated more than once.
-    pub fn new(
+    pub fn new<T>(
         inner: P,
-        mut fold_axes: Df,
+        fold_axes: T,
         init: impl IntoNdProducerWithShape<I::Dim, Item = I::Item, Producer = I>,
         f: F,
-    ) -> Self {
-        assert_valid_unique_axes::<P::Dim>(inner.ndim(), fold_axes.slice());
-        fold_axes.slice_mut().sort_unstable();
-        let ndim = inner.ndim() - fold_axes.ndim();
-        let outer_to_inner = {
-            let mut outer_to_inner = I::Dim::zeros(ndim);
-            let mut inner = 0;
-            let mut fold = 0;
-            for outer in 0..ndim {
-                while fold < fold_axes.ndim() && inner == fold_axes[fold] {
-                    inner += 1;
-                    fold += 1;
-                }
-                outer_to_inner[outer] = inner;
-                inner += 1;
-            }
-            outer_to_inner
-        };
+    ) -> Self
+    where
+        T: IntoAxesFor<P::Dim, Axes = Df>,
+        T::IntoOthers: IntoAxesFor<P::Dim, Axes = I::Dim>,
+    {
+        let (fold_axes, outer_to_inner) = fold_axes.into_these_and_other_axes_for(inner.ndim());
+        let ndim = outer_to_inner.num_axes();
         let shape = {
             let mut shape = I::Dim::zeros(ndim);
             for (outer_axis, len) in shape.slice_mut().iter_mut().enumerate() {
@@ -88,7 +70,6 @@ impl<P, Df, I, F> NdProducer for FoldAxesProducer<P, Df, I, F>
 where
     P: NdProducer,
     Df: Dimension,
-    P::Dim: SubDim<Df, Out = I::Dim>,
     I: NdProducer,
     F: FnMut(I::Item, P::Item) -> I::Item,
 {
@@ -96,11 +77,12 @@ where
     type Source = FoldAxesSource<P::Source, Df, I::Source, F>;
 
     fn into_source(mut self) -> Self::Source {
-        optimize_any_ord_axes(&mut self.inner, &mut self.fold_axes);
+        let mut fold_axes = self.fold_axes.into_inner();
+        optimize_any_ord_axes(&mut self.inner, &mut fold_axes);
         FoldAxesSource::new(
             self.inner.into_source(),
-            self.fold_axes,
-            self.outer_to_inner,
+            fold_axes,
+            self.outer_to_inner.into_inner(),
             self.init.into_source(),
             self.f,
         )
@@ -111,7 +93,6 @@ impl<P, Df, I, F> NdReshape for FoldAxesProducer<P, Df, I, F>
 where
     P: NdReshape,
     Df: Dimension,
-    P::Dim: SubDim<Df, Out = I::Dim>,
     I: NdReshape,
 {
     type Dim = I::Dim;
@@ -187,7 +168,6 @@ pub struct FoldAxesSource<S, Df, I, F>
 where
     S: NdSource,
     Df: Dimension,
-    S::Dim: SubDim<Df, Out = I::Dim>,
     I: NdSource,
 {
     inner: S,
@@ -208,13 +188,13 @@ impl<S, Df, I, F> FoldAxesSource<S, Df, I, F>
 where
     S: NdSource,
     Df: Dimension,
-    S::Dim: SubDim<Df, Out = I::Dim>,
     I: NdSource,
 {
     /// Creates a new `FoldAxesSource` instance. This is the only safe way to
     /// create a `FoldAxesSource` instance.
     fn new(inner: S, fold_axes: Df, outer_to_inner: I::Dim, init: I, f: F) -> Self {
         // Check that the ndims are consistent.
+        assert!(inner.ndim() >= init.ndim());
         assert_eq!(init.ndim(), outer_to_inner.ndim());
         assert_eq!(inner.ndim() - fold_axes.ndim(), outer_to_inner.ndim());
         // Check that the lengths of the axes common to `inner` and `init` are
@@ -264,7 +244,6 @@ impl<S, Df, I, F> NdSource for FoldAxesSource<S, Df, I, F>
 where
     S: NdSource,
     Df: Dimension,
-    S::Dim: SubDim<Df, Out = I::Dim>,
     I: NdSource,
     F: FnMut(I::Item, S::Item) -> I::Item,
 {
@@ -291,7 +270,6 @@ unsafe impl<S, Df, I, F> NdAccess for FoldAxesSource<S, Df, I, F>
 where
     S: NdSource,
     Df: Dimension,
-    S::Dim: SubDim<Df, Out = I::Dim>,
     I: NdSource,
 {
     type Dim = I::Dim;

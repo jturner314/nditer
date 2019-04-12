@@ -1,4 +1,7 @@
-use crate::{CanMerge, IntoNdProducer, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
+use crate::{
+    axes, CanMerge, IntoNdProducer, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat,
+    SubDim,
+};
 use itertools::izip;
 use ndarray::prelude::*;
 use ndarray::{Data, DataMut, RawData, RawDataClone, RawDataMut, RawViewRepr, Slice, ViewRepr};
@@ -65,7 +68,8 @@ where
     fn accumulate_axis_inplace<F>(&mut self, axis: Axis, f: F)
     where
         F: FnMut(&A, &mut A),
-        S: DataMut;
+        S: DataMut,
+        D: SubDim<Ix1>;
 }
 
 impl<A, S, D> ArrayBaseExt<A, S, D> for ArrayBase<S, D>
@@ -108,6 +112,7 @@ where
     where
         F: FnMut(&A, &mut A),
         S: DataMut,
+        D: SubDim<Ix1>,
     {
         if self.len_of(axis) <= 1 {
             return;
@@ -118,7 +123,7 @@ where
         curr.slice_axis_inplace(axis, Slice::from(1..));
         prev.into_producer()
             .zip(curr)
-            .forbid_invert_axes(axis.index())
+            .forbid_invert_axes(axes(axis.index()))
             .for_each(|(prev, curr)| unsafe {
                 // These pointer dereferences and borrows are safe because:
                 //
