@@ -1,4 +1,7 @@
-use crate::{CanMerge, IntoAxesFor, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
+use crate::{
+    errors::BroadcastError, CanMerge, IntoAxesFor, NdAccess, NdProducer, NdReshape, NdSource,
+    NdSourceRepeat,
+};
 use ndarray::{Axis, Dimension};
 
 /// A wrapper that broadcasts a producer to a larger shape.
@@ -51,7 +54,7 @@ where
         inner: T,
         axes_mapping: impl IntoAxesFor<D, Axes = T::Dim>,
         shape: D,
-    ) -> Option<Self> {
+    ) -> Result<Self, BroadcastError> {
         let axes_mapping = axes_mapping.into_axes_for(shape.ndim());
         assert_eq!(inner.ndim(), axes_mapping.num_axes());
         // Compute `outer_to_inner` and `pass_through`, and check that the
@@ -63,14 +66,14 @@ where
             let inner_len = inner.len_of(Axis(inner_ax));
             if inner_len != 1 {
                 if shape[outer_ax] != inner_len {
-                    return None;
+                    return Err(BroadcastError::new(&inner.shape(), &shape, &axes_mapping));
                 }
                 pass_through[outer_ax] = 1;
             }
         }
-        Some(BroadcastProducer {
+        Ok(BroadcastProducer {
             inner,
-            inner_to_outer: axes_mapping,
+            inner_to_outer: axes_mapping.into_inner(),
             outer_to_inner,
             pass_through,
             shape,

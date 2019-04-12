@@ -22,6 +22,7 @@ use self::adapters::{
     SelectIndicesAxis, Zip,
 };
 use self::axes::AxesFor;
+use self::errors::BroadcastError;
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
 use ndarray::{Array, ArrayBase, Axis, Data, Dimension, IntoDimension, Ix1, ShapeBuilder};
@@ -244,7 +245,7 @@ pub trait NdProducer: NdReshape + Sized {
     /// other words, axis `i` of the `self` becomes axis `axes_mapping[i]` in
     /// the result.
     ///
-    /// Returns `None` if `self` cannot be broadcast to the specified shape.
+    /// Returns `Err` if `self` cannot be broadcast to the specified shape.
     ///
     /// **Panics** if the axes in `axes_mapping` are not unique or if any of
     /// the axes are too large for `shape.ndim()`.
@@ -273,7 +274,7 @@ pub trait NdProducer: NdReshape + Sized {
         self,
         axes_mapping: impl IntoAxesFor<E::Dim, Axes = Self::Dim>,
         shape: E,
-    ) -> Option<BroadcastProducer<Self, E::Dim>> {
+    ) -> Result<BroadcastProducer<Self, E::Dim>, BroadcastError> {
         BroadcastProducer::try_new(self, axes_mapping, shape.into_dimension())
     }
 
@@ -966,6 +967,7 @@ impl<D: Dimension> DimensionExt for D {
 mod adapters;
 mod axes;
 mod dim_traits;
+pub mod errors;
 mod impl_ndarray;
 mod iter;
 mod optimize;
