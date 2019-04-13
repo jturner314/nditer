@@ -205,8 +205,11 @@ where
     D: Dimension,
 {
     inner: &'a mut T,
+    /// Iteration axes before optimization.
     orig_axes: D,
+    /// Shape of the producer before optimization.
     orig_shape: T::Dim,
+    /// Whether the axes of the producer have been inverted.
     inverted: T::Dim,
     /// Each element of `merged` is the list of axes merged into the axis.
     merged: Vec<Vec<usize>>,
@@ -237,6 +240,11 @@ where
             debug_assert_eq!(orig_axes, optim_axes);
         }
 
+        // Determine the order the original axes of the producer will be
+        // iterated over. (This is usually not the same as `optim_axes` because
+        // axes have been merged together in the producer.) Also observe that
+        // `iter_axes` may contain fewer axes than the underlying producer. (It
+        // only contains those axes that will be iterated over.)
         let mut iter_axes = D::zeros(optim_axes.ndim());
         iter_axes
             .slice_mut()
