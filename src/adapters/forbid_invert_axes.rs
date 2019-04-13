@@ -75,6 +75,11 @@ where
     }
 
     fn merge_axes(&mut self, take: Axis, into: Axis) {
+        // Propagate inversion constraint to `into` axis because movement along
+        // `take` axis becomes movement along the `into` axis after merging.
+        if self.forbid_invert[take.index()] != 0 {
+            self.forbid_invert[into.index()] = 1;
+        }
         self.inner.merge_axes(take, into)
     }
 
