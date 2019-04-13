@@ -17,10 +17,10 @@ where
     }
     for axis in 0..(ndim - 1) {
         match producer.can_merge_axes(Axis(axis), Axis(axis + 1)) {
-            CanMerge::IfUnchanged | CanMerge::IfEither => {
+            CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                 producer.merge_axes(Axis(axis), Axis(axis + 1))
             }
-            CanMerge::IfInverted | CanMerge::Never => {}
+            CanMerge::IfOneInverted | CanMerge::Never => {}
         }
     }
     let mut axes = T::Dim::zeros(ndim);
@@ -97,18 +97,18 @@ where
         let take = Axis(axes[0]);
         let into = Axis(axes[1]);
         match producer.can_merge_axes(take, into) {
-            CanMerge::IfUnchanged | CanMerge::IfEither => {
+            CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted if producer.can_invert_axis(take) => {
+            CanMerge::IfOneInverted if producer.can_invert_axis(take) => {
                 producer.invert_axis(take);
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted if producer.can_invert_axis(into) => {
+            CanMerge::IfOneInverted if producer.can_invert_axis(into) => {
                 producer.invert_axis(into);
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted | CanMerge::Never => {}
+            CanMerge::IfOneInverted | CanMerge::Never => {}
         }
 
         return;
@@ -143,27 +143,27 @@ where
                 let into = Axis(axes[i]);
                 let can_merge = producer.can_merge_axes(take, into);
                 match can_merge {
-                    CanMerge::IfUnchanged | CanMerge::IfEither => {
+                    CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted if producer.can_invert_axis(take) => {
+                    CanMerge::IfOneInverted if producer.can_invert_axis(take) => {
                         producer.invert_axis(take);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted if producer.can_invert_axis(into) => {
+                    CanMerge::IfOneInverted if producer.can_invert_axis(into) => {
                         producer.invert_axis(into);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted | CanMerge::Never => {
+                    CanMerge::IfOneInverted | CanMerge::Never => {
                         t += 1;
                     }
                 }

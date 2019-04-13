@@ -912,22 +912,30 @@ pub unsafe trait NdAccess {
 pub enum CanMerge {
     /// The axes cannot be merged.
     Never = 0b00,
-    /// The axes can be merged if they are unchanged.
-    IfUnchanged = 0b01,
-    /// The axes can be merged after inverting one of them (assuming it's
-    /// possible to invert one of them).
+    /// The axes can be merged if they are left unchanged, and they can be
+    /// merged after inverting both of them (assuming it's possible to invert
+    /// both of them).
+    ///
+    /// This does not imply that it's possible to invert the axes; you need to
+    /// check `NdReshape::can_invert_axis` to determine if an axis can be
+    /// inverted.
+    IfUnchangedOrBothInverted = 0b01,
+    /// The axes can be merged after inverting either one of them (assuming
+    /// it's possible to invert one of them).
     ///
     /// This does not imply that it's possible to invert one of the axes; you
     /// need to check `NdReshape::can_invert_axis` to determine if an axis can
     /// be inverted.
-    IfInverted = 0b10,
+    IfOneInverted = 0b10,
     /// The axes can be merged after inverting one of them (assuming it's
-    /// possible to invert one of them) or if they are unchanged.
+    /// possible to invert one of them), they can be merged if they are
+    /// unchanged, and they can be merged after inverting both of them
+    /// (assuming it's possible to invert both of them).
     ///
-    /// This does not imply that it's possible to invert one of the axes; you
-    /// need to check `NdReshape::can_invert_axis` to determine if an axis can
-    /// be inverted.
-    IfEither = 0b11,
+    /// This does not imply that it's possible to invert either of the axes;
+    /// you need to check `NdReshape::can_invert_axis` to determine if an axis
+    /// can be inverted.
+    Always = 0b11,
 }
 
 impl ::std::ops::BitAnd for CanMerge {
@@ -936,9 +944,9 @@ impl ::std::ops::BitAnd for CanMerge {
         let and = (self as u8) & (rhs as u8);
         let out = match and {
             0b00 => CanMerge::Never,
-            0b01 => CanMerge::IfUnchanged,
-            0b10 => CanMerge::IfInverted,
-            0b11 => CanMerge::IfEither,
+            0b01 => CanMerge::IfUnchangedOrBothInverted,
+            0b10 => CanMerge::IfOneInverted,
+            0b11 => CanMerge::Always,
             _ => unreachable!(),
         };
         debug_assert_eq!(and, out as u8);

@@ -120,7 +120,7 @@ where
         if t == i && self.shape[t] > 1 {
             CanMerge::Never
         } else {
-            CanMerge::IfEither
+            CanMerge::Always
         }
     }
 

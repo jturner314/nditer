@@ -171,7 +171,7 @@ where
                 let inner_into = Axis(self.outer_to_inner[into.index()]);
                 self.inner.can_merge_axes(inner_take, inner_into)
             }
-            (0, 0) if take != into || self.len_of(take) <= 1 => CanMerge::IfEither,
+            (0, 0) if take != into || self.len_of(take) <= 1 => CanMerge::Always,
             _ => CanMerge::Never,
         }
     }
