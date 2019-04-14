@@ -22,7 +22,7 @@ use self::adapters::{
     SelectIndicesAxis, Zip,
 };
 use self::axes::AxesFor;
-use self::errors::BroadcastError;
+use self::errors::{BroadcastError, OrderedAxisError};
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
 use ndarray::{Array, ArrayBase, Axis, Data, DataMut, Dimension, IntoDimension, Ix1, ShapeBuilder};
@@ -536,6 +536,9 @@ pub trait NdProducer: NdReshape + Sized {
     /// Creates a wrapper that selects specific indices along an axis of the
     /// inner producer.
     ///
+    /// Returns `Err` if the inner producer requires iteration over `axis` to
+    /// occur in order.
+    ///
     /// **Panics** when converting to a source if any of the indices are
     /// out-of-bounds.
     ///
@@ -549,21 +552,22 @@ pub trait NdProducer: NdReshape + Sized {
     /// let indices = array![0, 1, 3, 5];
     /// let selected_squared = arr
     ///     .producer()
-    ///     .select_indices_axis(Axis(1), &indices)
+    ///     .select_indices_axis(Axis(1), &indices)?
     ///     .map(|x| x * x)
     ///     .collect_array();
     /// assert_eq!(selected_squared, array![[1, 4, 16, 36], [49, 64, 100, 144]]);
+    /// # Ok::<(), nditer::errors::OrderedAxisError>(())
     /// ```
     fn select_indices_axis<'a, S>(
         self,
         axis: Axis,
         indices: &'a ArrayBase<S, Ix1>,
-    ) -> SelectIndicesAxis<'a, Self>
+    ) -> Result<SelectIndicesAxis<'a, Self>, OrderedAxisError>
     where
         S: Data<Elem = usize>,
         Self::Source: NdSourceRepeat,
     {
-        SelectIndicesAxis::new(self, axis, indices.view())
+        SelectIndicesAxis::try_new(self, axis, indices.view())
     }
 
     /// Collects the producer into an `Array`.
