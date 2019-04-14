@@ -1029,6 +1029,11 @@ pub(crate) trait DimensionExt {
     fn visitv<F>(&self, f: F)
     where
         F: FnMut(usize);
+
+    /// Calls `f` for each axis index and element value.
+    fn indexed_visitv<F>(&self, f: F)
+    where
+        F: FnMut(Axis, usize);
 }
 
 impl<D: Dimension> DimensionExt for D {
@@ -1062,6 +1067,16 @@ impl<D: Dimension> DimensionExt for D {
         F: FnMut(usize),
     {
         self.slice().iter().cloned().for_each(f)
+    }
+
+    fn indexed_visitv<F>(&self, mut f: F)
+    where
+        F: FnMut(Axis, usize),
+    {
+        self.slice()
+            .iter()
+            .enumerate()
+            .for_each(move |(ax, &elem)| f(Axis(ax), elem))
     }
 }
 

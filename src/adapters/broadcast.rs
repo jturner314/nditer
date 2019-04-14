@@ -1,6 +1,6 @@
 use crate::{
-    errors::BroadcastError, CanMerge, IntoAxesFor, NdAccess, NdProducer, NdReshape, NdSource,
-    NdSourceRepeat,
+    errors::BroadcastError, CanMerge, DimensionExt, IntoAxesFor, NdAccess, NdProducer, NdReshape,
+    NdSource, NdSourceRepeat,
 };
 use ndarray::{Axis, Dimension};
 
@@ -108,13 +108,11 @@ where
             // Check that the passed-through axes are mapped to unique axes of
             // `inner.ndim()`, and check that all axes of `inner` that aren't
             // passed-into have length 1.
-            for (inner_axis, &usage_count) in usage_counts.slice().iter().enumerate() {
-                match usage_count {
-                    0 => assert!(inner.len_of(Axis(inner_axis)) == 1),
-                    1 => {}
-                    _ => panic!("There should not be duplicate passed-through axes."),
-                }
-            }
+            usage_counts.indexed_visitv(|inner_axis, usage_count| match usage_count {
+                0 => assert!(inner.len_of(inner_axis) == 1),
+                1 => {}
+                _ => panic!("There should not be duplicate passed-through axes."),
+            });
         }
         BroadcastSource {
             inner,
