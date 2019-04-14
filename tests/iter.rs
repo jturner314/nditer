@@ -1,5 +1,5 @@
 use ndarray::prelude::*;
-use nditer::{repeat_with, ArrayBaseExt, IntoNdProducer, NdProducer};
+use nditer::{repeat, ArrayBaseExt, IntoNdProducer, NdProducer};
 use quickcheck::TestResult;
 use quickcheck_macros::quickcheck;
 
@@ -62,7 +62,7 @@ fn iter_len(shape: Vec<usize>, consume: usize) -> TestResult {
         Some(total_len) if total_len >= consume && total_len <= MAX_LEN => total_len,
         _ => return TestResult::discard(),
     };
-    let mut iter = repeat_with(shape, || 0).into_iter();
+    let mut iter = repeat(shape, 0).into_iter();
     for _ in 0..consume {
         let _ = iter.next();
     }
