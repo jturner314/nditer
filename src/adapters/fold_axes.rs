@@ -117,9 +117,9 @@ where
         strides
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
         let inner_axis = Axis(self.outer_to_inner[axis.index()]);
-        self.init.can_invert_axis(axis) && self.inner.can_invert_axis(inner_axis)
+        self.init.is_axis_ordered(axis) || self.inner.is_axis_ordered(inner_axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {

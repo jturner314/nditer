@@ -56,8 +56,8 @@ where
         let b = self.b.approx_abs_strides();
         a + b
     }
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        self.a.can_invert_axis(axis) && self.b.can_invert_axis(axis)
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        self.a.is_axis_ordered(axis) || self.b.is_axis_ordered(axis)
     }
     fn invert_axis(&mut self, axis: Axis) {
         self.a.invert_axis(axis);

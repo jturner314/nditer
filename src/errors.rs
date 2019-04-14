@@ -1,7 +1,7 @@
 //! Error types.
 
 use crate::AxesFor;
-use ndarray::Dimension;
+use ndarray::{Axis, Dimension};
 use std::error::Error;
 use std::fmt;
 
@@ -41,3 +41,28 @@ impl fmt::Display for BroadcastError {
 }
 
 impl Error for BroadcastError {}
+
+/// Error that indicates that an axis must be iterated in order, and something
+/// tried to violate that property.
+#[derive(Debug)]
+pub struct OrderedAxisError {
+    axis: Axis,
+}
+
+impl OrderedAxisError {
+    pub(crate) fn new(axis: Axis) -> OrderedAxisError {
+        OrderedAxisError { axis }
+    }
+}
+
+impl fmt::Display for OrderedAxisError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "Axis {:?} must be iterated in order, but something tried to violate that property",
+            self.axis
+        )
+    }
+}
+
+impl Error for OrderedAxisError {}

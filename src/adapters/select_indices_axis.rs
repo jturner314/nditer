@@ -1,4 +1,6 @@
-use crate::{CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
+use crate::{
+    CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat, OrderedAxisError,
+};
 use ndarray::{ArrayView1, Axis};
 use std::cmp;
 
@@ -83,12 +85,29 @@ pub struct SelectIndicesAxis<'a, T> {
     indices: Indices<'a>,
 }
 
-impl<'a, T> SelectIndicesAxis<'a, T> {
-    pub(crate) fn new(inner: T, axis: Axis, indices: ArrayView1<'a, usize>) -> Self {
-        SelectIndicesAxis {
-            inner,
-            axis,
-            indices: Indices::new(indices),
+impl<'a, T> SelectIndicesAxis<'a, T>
+where
+    T: NdReshape,
+{
+    /// Creates a new producer that selects the given `indices` along `axis` of
+    /// `inner`.
+    ///
+    /// Returns `Err` if `inner.is_axis_ordered(axis)` is `true`, since
+    /// `SelectIndicesAxis` iterates over `axis` in random order (according to
+    /// the `indices`).
+    pub(crate) fn try_new(
+        inner: T,
+        axis: Axis,
+        indices: ArrayView1<'a, usize>,
+    ) -> Result<Self, OrderedAxisError> {
+        if inner.is_axis_ordered(axis) {
+            return Err(OrderedAxisError::new(axis));
+        } else {
+            Ok(SelectIndicesAxis {
+                inner,
+                axis,
+                indices: Indices::new(indices),
+            })
         }
     }
 }
@@ -138,8 +157,8 @@ where
         strides
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        axis == self.axis || self.inner.can_invert_axis(axis)
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        axis != self.axis && self.inner.is_axis_ordered(axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {

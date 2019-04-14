@@ -17,10 +17,10 @@ where
     }
     for axis in 0..(ndim - 1) {
         match producer.can_merge_axes(Axis(axis), Axis(axis + 1)) {
-            CanMerge::IfUnchanged | CanMerge::IfEither => {
+            CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                 producer.merge_axes(Axis(axis), Axis(axis + 1))
             }
-            CanMerge::IfInverted | CanMerge::Never => {}
+            CanMerge::IfOneInverted | CanMerge::Never => {}
         }
     }
     let mut axes = T::Dim::zeros(ndim);
@@ -97,18 +97,18 @@ where
         let take = Axis(axes[0]);
         let into = Axis(axes[1]);
         match producer.can_merge_axes(take, into) {
-            CanMerge::IfUnchanged | CanMerge::IfEither => {
+            CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted if producer.can_invert_axis(take) => {
+            CanMerge::IfOneInverted if !producer.is_axis_ordered(take) => {
                 producer.invert_axis(take);
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted if producer.can_invert_axis(into) => {
+            CanMerge::IfOneInverted if !producer.is_axis_ordered(into) => {
                 producer.invert_axis(into);
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfInverted | CanMerge::Never => {}
+            CanMerge::IfOneInverted | CanMerge::Never => {}
         }
 
         return;
@@ -143,27 +143,27 @@ where
                 let into = Axis(axes[i]);
                 let can_merge = producer.can_merge_axes(take, into);
                 match can_merge {
-                    CanMerge::IfUnchanged | CanMerge::IfEither => {
+                    CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted if producer.can_invert_axis(take) => {
+                    CanMerge::IfOneInverted if !producer.is_axis_ordered(take) => {
                         producer.invert_axis(take);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted if producer.can_invert_axis(into) => {
+                    CanMerge::IfOneInverted if !producer.is_axis_ordered(into) => {
                         producer.invert_axis(into);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfInverted | CanMerge::Never => {
+                    CanMerge::IfOneInverted | CanMerge::Never => {
                         t += 1;
                     }
                 }
@@ -205,8 +205,11 @@ where
     D: Dimension,
 {
     inner: &'a mut T,
+    /// Iteration axes before optimization.
     orig_axes: D,
+    /// Shape of the producer before optimization.
     orig_shape: T::Dim,
+    /// Whether the axes of the producer have been inverted.
     inverted: T::Dim,
     /// Each element of `merged` is the list of axes merged into the axis.
     merged: Vec<Vec<usize>>,
@@ -237,6 +240,11 @@ where
             debug_assert_eq!(orig_axes, optim_axes);
         }
 
+        // Determine the order the original axes of the producer will be
+        // iterated over. (This is usually not the same as `optim_axes` because
+        // axes have been merged together in the producer.) Also observe that
+        // `iter_axes` may contain fewer axes than the underlying producer. (It
+        // only contains those axes that will be iterated over.)
         let mut iter_axes = D::zeros(optim_axes.ndim());
         iter_axes
             .slice_mut()
@@ -295,8 +303,8 @@ where
         self.inner.approx_abs_strides()
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        self.inner.can_invert_axis(axis)
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        self.inner.is_axis_ordered(axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {

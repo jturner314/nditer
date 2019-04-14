@@ -146,12 +146,12 @@ where
         outer_strides
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
         if self.pass_through[axis.index()] != 0 {
             let inner_axis = Axis(self.outer_to_inner[axis.index()]);
-            self.inner.can_invert_axis(inner_axis)
+            self.inner.is_axis_ordered(inner_axis)
         } else {
-            true
+            false
         }
     }
 
@@ -171,7 +171,7 @@ where
                 let inner_into = Axis(self.outer_to_inner[into.index()]);
                 self.inner.can_merge_axes(inner_take, inner_into)
             }
-            (0, 0) if take != into || self.len_of(take) <= 1 => CanMerge::IfEither,
+            (0, 0) if take != into || self.len_of(take) <= 1 => CanMerge::Always,
             _ => CanMerge::Never,
         }
     }
@@ -186,7 +186,7 @@ where
 
         // Pass through to inner producer if necessary.
         let pass_take = self.pass_through[take.index()];
-        let pass_into = self.pass_through[take.index()];
+        let pass_into = self.pass_through[into.index()];
         match (pass_take, pass_into) {
             (1, 1) => {
                 let inner_take = Axis(self.outer_to_inner[take.index()]);
