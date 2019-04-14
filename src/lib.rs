@@ -18,7 +18,7 @@ pub use self::impl_ndarray::ArrayBaseExt;
 pub use self::iter::Iter;
 
 use self::adapters::{
-    BroadcastProducer, Cloned, FoldAxesProducer, ForbidInvertAxes, IndexedProducer, Inspect, Map,
+    BroadcastProducer, Cloned, FoldAxesProducer, ForceAxesOrdered, IndexedProducer, Inspect, Map,
     SelectIndicesAxis, Zip,
 };
 use self::axes::AxesFor;
@@ -143,12 +143,11 @@ pub trait NdProducer: NdReshape + Sized {
         Iter::new(self, axes)
     }
 
-    /// Prevents any methods from inverting the specified axes.
+    /// Forces iteration to occur in order for each specified axis.
     ///
     /// This is useful when you want iteration to move in order along some axes
-    /// (you want to prevent them from being inverted), but you don't care
-    /// about iteration order across axes or iteration order along any other
-    /// axes.
+    /// (not in reverse or random order), but you don't care about iteration
+    /// order across axes or iteration order along any other axes.
     ///
     /// # Example
     ///
@@ -188,13 +187,14 @@ pub trait NdProducer: NdReshape + Sized {
     /// assert_eq!(allow_invert, vec![3, 4, 1, 2]);
     /// ```
     ///
-    /// Let's forbid axis 0 from being inverted. In this case, the optimizer
+    /// Let's force axis 0 to be iterated in order. In this case, the optimizer
     /// finds that while it can't invert axis 0, inverting axis 1 is beneficial
     /// because that allows the axes to be merged and iteration can proceed in
-    /// (reverse) memory order. (Note that other than not inverting axis, the
-    /// iteration order is not guaranteed.) Observe that since we've forbidden
-    /// inversion of axis 0, element `1` is guaranteed to occur before element
-    /// `3`, and element `2` is guaranteed to occur before element `4`.
+    /// (reverse) memory order. (Note that other than iterating over axis 0 in
+    /// order, the iteration order is not guaranteed.) Observe that since we've
+    /// required axis 0 to be iterated in order, element `1` is guaranteed to
+    /// occur before element `3`, and element `2` is guaranteed to occur before
+    /// element `4`.
     ///
     /// ```
     /// # use ndarray::{array, Axis};
@@ -207,14 +207,13 @@ pub trait NdProducer: NdReshape + Sized {
     /// let forbid_invert: Vec<_> = a
     ///     .producer()
     ///     .cloned()
-    ///     .forbid_invert_axes(axes(0))
+    ///     .force_axes_ordered(axes(0))
     ///     .into_iter_any_ord()
     ///     .collect();
     /// assert_eq!(forbid_invert, vec![2, 1, 4, 3]);
     /// ```
-    fn forbid_invert_axes(self, axes: impl IntoAxesFor<Self::Dim>) -> ForbidInvertAxes<Self> {
-        let axes = axes.into_axes_for(self.ndim());
-        ForbidInvertAxes::new(self, axes.slice().iter().cloned())
+    fn force_axes_ordered(self, axes: impl IntoAxesFor<Self::Dim>) -> ForceAxesOrdered<Self> {
+        ForceAxesOrdered::new(self, axes)
     }
 
     /// Zips up two producers into a single producer of pairs.
@@ -659,10 +658,27 @@ pub trait NdReshape {
     ///    and approximate strides, and the best order is chosen.)
     fn approx_abs_strides(&self) -> Self::Dim;
 
-    /// Returns whether the axis can be inverted.
+    /// Returns whether iteration along the axis must proceed in order.
+    ///
+    /// If the return value is `false`, iteration along the axis may be done in
+    /// any order (e.g. in reverse order or in random order). If the return
+    /// value is `true`, iteration along the axis must be done in order.
+    ///
+    /// Implementation requirements:
+    ///
+    /// * If a producer returns `true` for an axis, any producers that wrap it
+    ///   must ensure that iteration proceeds in order for that axis (which
+    ///   typically means the wrapper would have to return `true` as well).
+    ///
+    /// * If a producer returns `true` for an axis, it may rely on the
+    ///   iteration going in order along that axis for correctness, but not for
+    ///   safety, since `NdReshape` is safe to implement.
+    ///
+    /// * If the return value is `false`, calling `.invert_axis()` for that
+    ///   axis must not panic.
     ///
     /// **May panic** if `axis` is out-of-bounds.
-    fn can_invert_axis(&self, axis: Axis) -> bool;
+    fn is_axis_ordered(&self, axis: Axis) -> bool;
 
     /// Reverses the direction of the axis.
     ///
@@ -917,14 +933,14 @@ pub enum CanMerge {
     /// both of them).
     ///
     /// This does not imply that it's possible to invert the axes; you need to
-    /// check `NdReshape::can_invert_axis` to determine if an axis can be
+    /// check `NdReshape::is_axis_ordered` to determine if an axis can be
     /// inverted.
     IfUnchangedOrBothInverted = 0b01,
     /// The axes can be merged after inverting either one of them (assuming
     /// it's possible to invert one of them).
     ///
     /// This does not imply that it's possible to invert one of the axes; you
-    /// need to check `NdReshape::can_invert_axis` to determine if an axis can
+    /// need to check `NdReshape::is_axis_ordered` to determine if an axis can
     /// be inverted.
     IfOneInverted = 0b10,
     /// The axes can be merged after inverting one of them (assuming it's
@@ -933,7 +949,7 @@ pub enum CanMerge {
     /// (assuming it's possible to invert both of them).
     ///
     /// This does not imply that it's possible to invert either of the axes;
-    /// you need to check `NdReshape::can_invert_axis` to determine if an axis
+    /// you need to check `NdReshape::is_axis_ordered` to determine if an axis
     /// can be inverted.
     Always = 0b11,
 }

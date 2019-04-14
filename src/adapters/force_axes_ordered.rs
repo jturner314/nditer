@@ -1,38 +1,36 @@
-use crate::{CanMerge, NdProducer, NdReshape};
+use crate::{CanMerge, DimensionExt, IntoAxesFor, NdProducer, NdReshape};
 use ndarray::{Axis, Dimension};
 
-/// A wrapper that prevents optimization from inverting the specified axes of
-/// the inner producer.
+/// A wrapper that forces iteration to occur in order for each specified axis.
 ///
-/// This struct is created by the `forbid_invert_axes` method on `NdProducer`.
+/// This struct is created by the `force_axes_ordered` method on `NdProducer`.
 /// See its documentation for more.
-pub struct ForbidInvertAxes<T>
+pub struct ForceAxesOrdered<T>
 where
     T: NdReshape,
 {
     inner: T,
     /// Whether axes are forbidden to be inverted (0 means inverting is okay; 1
     /// means inverting is forbidden).
-    forbid_invert: T::Dim,
+    force_ordered: T::Dim,
 }
 
-impl<T> ForbidInvertAxes<T>
+impl<T> ForceAxesOrdered<T>
 where
     T: NdProducer,
 {
-    pub(crate) fn new(inner: T, forbid_invert_axes: impl IntoIterator<Item = usize>) -> Self {
-        let mut forbid_invert = T::Dim::zeros(inner.ndim());
-        for axis in forbid_invert_axes {
-            forbid_invert[axis] = 1;
-        }
-        ForbidInvertAxes {
+    pub(crate) fn new(inner: T, ordered_axes: impl IntoAxesFor<T::Dim>) -> Self {
+        let mut force_ordered = T::Dim::zeros(inner.ndim());
+        let axes = ordered_axes.into_axes_for(inner.ndim()).into_inner();
+        axes.visitv(|axis| force_ordered[axis] = 1);
+        ForceAxesOrdered {
             inner,
-            forbid_invert,
+            force_ordered,
         }
     }
 }
 
-impl<T> NdProducer for ForbidInvertAxes<T>
+impl<T> NdProducer for ForceAxesOrdered<T>
 where
     T: NdProducer,
 {
@@ -43,7 +41,7 @@ where
     }
 }
 
-impl<T> NdReshape for ForbidInvertAxes<T>
+impl<T> NdReshape for ForceAxesOrdered<T>
 where
     T: NdReshape,
 {
@@ -57,14 +55,14 @@ where
         self.inner.approx_abs_strides()
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        self.inner.can_invert_axis(axis) && self.forbid_invert[axis.index()] == 0
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        self.inner.is_axis_ordered(axis) || self.force_ordered[axis.index()] != 0
     }
 
     fn invert_axis(&mut self, axis: Axis) {
         assert!(
-            self.forbid_invert[axis.index()] == 0,
-            "Inverting axis {} is forbidden",
+            self.force_ordered[axis.index()] == 0,
+            "Axis {} must be iterated in order",
             axis.index(),
         );
         self.inner.invert_axis(axis)
@@ -75,10 +73,10 @@ where
     }
 
     fn merge_axes(&mut self, take: Axis, into: Axis) {
-        // Propagate inversion constraint to `into` axis because movement along
+        // Propagate ordered constraint to `into` axis because movement along
         // `take` axis becomes movement along the `into` axis after merging.
-        if self.forbid_invert[take.index()] != 0 {
-            self.forbid_invert[into.index()] = 1;
+        if self.force_ordered[take.index()] != 0 {
+            self.force_ordered[into.index()] = 1;
         }
         self.inner.merge_axes(take, into)
     }

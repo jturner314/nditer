@@ -105,9 +105,9 @@ where
         D::zeros(self.shape.ndim())
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
         debug_assert!(axis.index() < self.shape.ndim());
-        true
+        false
     }
 
     fn invert_axis(&mut self, axis: Axis) {

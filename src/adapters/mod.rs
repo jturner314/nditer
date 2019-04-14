@@ -6,7 +6,7 @@
 pub use self::broadcast::{BroadcastProducer, BroadcastSource};
 pub use self::cloned::Cloned;
 pub use self::fold_axes::{FoldAxesProducer, FoldAxesSource};
-pub use self::forbid_invert_axes::ForbidInvertAxes;
+pub use self::force_axes_ordered::ForceAxesOrdered;
 pub use self::indexed::{IndexedProducer, IndexedSource};
 pub use self::inspect::Inspect;
 pub use self::map::Map;
@@ -23,8 +23,8 @@ macro_rules! impl_ndreshape_methods_for_wrapper {
         fn approx_abs_strides(&self) -> Self::Dim {
             $crate::NdReshape::approx_abs_strides(&self.$inner)
         }
-        fn can_invert_axis(&self, axis: Axis) -> bool {
-            $crate::NdReshape::can_invert_axis(&self.$inner, axis)
+        fn is_axis_ordered(&self, axis: Axis) -> bool {
+            $crate::NdReshape::is_axis_ordered(&self.$inner, axis)
         }
         fn invert_axis(&mut self, axis: Axis) {
             $crate::NdReshape::invert_axis(&mut self.$inner, axis)
@@ -83,7 +83,7 @@ macro_rules! impl_ndaccess_methods_for_wrapper {
 mod broadcast;
 mod cloned;
 mod fold_axes;
-mod forbid_invert_axes;
+mod force_axes_ordered;
 mod indexed;
 mod inspect;
 mod map;

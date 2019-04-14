@@ -100,11 +100,11 @@ where
             CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfOneInverted if producer.can_invert_axis(take) => {
+            CanMerge::IfOneInverted if !producer.is_axis_ordered(take) => {
                 producer.invert_axis(take);
                 producer.merge_axes(take, into);
             }
-            CanMerge::IfOneInverted if producer.can_invert_axis(into) => {
+            CanMerge::IfOneInverted if !producer.is_axis_ordered(into) => {
                 producer.invert_axis(into);
                 producer.merge_axes(take, into);
             }
@@ -149,14 +149,14 @@ where
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfOneInverted if producer.can_invert_axis(take) => {
+                    CanMerge::IfOneInverted if !producer.is_axis_ordered(take) => {
                         producer.invert_axis(take);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
                         rest += 1;
                         t = rest;
                     }
-                    CanMerge::IfOneInverted if producer.can_invert_axis(into) => {
+                    CanMerge::IfOneInverted if !producer.is_axis_ordered(into) => {
                         producer.invert_axis(into);
                         producer.merge_axes(take, into);
                         roll(&mut axes.slice_mut()[rest..=t], 1);
@@ -303,8 +303,8 @@ where
         self.inner.approx_abs_strides()
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        self.inner.can_invert_axis(axis)
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        self.inner.is_axis_ordered(axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {

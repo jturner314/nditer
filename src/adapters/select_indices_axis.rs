@@ -138,8 +138,8 @@ where
         strides
     }
 
-    fn can_invert_axis(&self, axis: Axis) -> bool {
-        axis == self.axis || self.inner.can_invert_axis(axis)
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
+        axis != self.axis && self.inner.is_axis_ordered(axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {

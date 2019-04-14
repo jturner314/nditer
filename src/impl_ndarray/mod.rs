@@ -123,7 +123,7 @@ where
         curr.slice_axis_inplace(axis, Slice::from(1..));
         prev.into_producer()
             .zip(curr)
-            .forbid_invert_axes(axes(axis.index()))
+            .force_axes_ordered(axes(axis.index()))
             .for_each(|(prev, curr)| unsafe {
                 // These pointer dereferences and borrows are safe because:
                 //
@@ -269,9 +269,9 @@ where
         }
         abs_strides
     }
-    fn can_invert_axis(&self, axis: Axis) -> bool {
+    fn is_axis_ordered(&self, axis: Axis) -> bool {
         debug_assert!(axis.index() < self.ndim());
-        true
+        false
     }
     fn invert_axis(&mut self, axis: Axis) {
         self.arr.invert_axis(axis);
