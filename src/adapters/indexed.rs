@@ -1,15 +1,14 @@
-use crate::{CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
-use itertools::izip;
-use ndarray::{Axis, Dimension};
+use crate::{AxesMask, CanMerge, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
+use ndarray::{Axis, Dimension, IxDyn};
 
 /// A producer that yields the index along with the element.
 ///
 /// This struct is created by the `indexed` method on `NdProducer`. See its
 /// documentation for more.
-pub struct IndexedProducer<T, D> {
+pub struct IndexedProducer<T, D: Dimension> {
     inner: T,
-    /// Which axes are inverted (0 for "not inverted", and 1 for "is inverted").
-    is_inverted: D,
+    /// Which axes are inverted.
+    is_inverted: AxesMask<D, IxDyn>,
 }
 
 /// A source that yields the index along with the element.
@@ -26,7 +25,7 @@ where
 {
     pub(crate) fn new(inner: T) -> Self {
         IndexedProducer {
-            is_inverted: D::zeros(inner.ndim()),
+            is_inverted: AxesMask::all_false(inner.ndim()).into_dyn_num_true(),
             inner,
         }
     }
@@ -42,18 +41,16 @@ where
     fn into_source(self) -> Self::Source {
         let inner = self.inner.into_source();
         let is_inverted = self.is_inverted;
-        assert_eq!(inner.ndim(), is_inverted.ndim());
-        let mut index_strides = D::zeros(is_inverted.ndim());
-        for (stride, &is_inv) in izip!(index_strides.slice_mut(), is_inverted.slice()) {
-            *stride = if is_inv != 0 { (-1isize) as usize } else { 1 };
-        }
+        assert_eq!(inner.ndim(), is_inverted.for_ndim());
+        let index_strides =
+            is_inverted.mapv_to_dim(|is_inv| if is_inv { (-1isize) as usize } else { 1 });
         let mut first_index = D::first_index(&inner.shape());
         if let Some(ref mut idx) = first_index {
-            for (ax, &is_inverted) in is_inverted.slice().iter().enumerate() {
-                if is_inverted != 0 {
-                    idx[ax] = inner.len_of(Axis(ax)) - 1;
+            is_inverted.indexed_visitv(|axis, is_inv| {
+                if is_inv {
+                    idx[axis.index()] = inner.len_of(axis) - 1;
                 }
-            }
+            });
         }
         IndexedSource {
             inner,
@@ -87,11 +84,7 @@ where
     }
     fn invert_axis(&mut self, axis: Axis) {
         self.inner.invert_axis(axis);
-        self.is_inverted[axis.index()] = if self.is_inverted[axis.index()] != 0 {
-            0
-        } else {
-            1
-        };
+        self.is_inverted.write(axis, !self.is_inverted.read(axis));
     }
     /// Always returns `CanMerge::Never`.
     fn can_merge_axes(&self, _take: Axis, _into: Axis) -> CanMerge {

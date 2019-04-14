@@ -21,7 +21,7 @@ use self::adapters::{
     BroadcastProducer, Cloned, FoldAxesProducer, ForceAxesOrdered, IndexedProducer, Inspect, Map,
     SelectIndicesAxis, Zip,
 };
-use self::axes::AxesFor;
+use self::axes::{AxesFor, AxesMask};
 use self::errors::{BroadcastError, OrderedAxisError};
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;

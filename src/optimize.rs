@@ -1,6 +1,6 @@
 use itertools::izip;
-use ndarray::{Axis, Dimension};
-use crate::{assert_valid_unique_axes, CanMerge, Layout, NdReshape};
+use ndarray::{Axis, Dimension, IxDyn};
+use crate::{assert_valid_unique_axes, AxesMask, CanMerge, Layout, NdReshape};
 
 /// Optimizes the producer, preserving order, and returns the order for
 /// iterating over axes (assuming the last index moves the fastest).
@@ -210,7 +210,7 @@ where
     /// Shape of the producer before optimization.
     orig_shape: T::Dim,
     /// Whether the axes of the producer have been inverted.
-    inverted: T::Dim,
+    inverted: AxesMask<T::Dim, IxDyn>,
     /// Each element of `merged` is the list of axes merged into the axis.
     merged: Vec<Vec<usize>>,
 }
@@ -224,7 +224,7 @@ where
         OptimRecorder {
             orig_axes,
             orig_shape: inner.shape(),
-            inverted: T::Dim::zeros(inner.ndim()),
+            inverted: AxesMask::all_false(inner.ndim()).into_dyn_num_true(),
             merged: (0..inner.ndim()).map(|i| vec![i]).collect(),
             inner,
         }
@@ -270,7 +270,7 @@ where
             let mut cum_prod: isize = 1;
             for &ax in iter_axes.slice().iter().rev() {
                 let len = self.orig_shape[ax];
-                if self.inverted[ax] != 0 {
+                if self.inverted.read(Axis(ax)) {
                     offset += (len - 1) as isize * cum_prod;
                     strides[ax] = (-cum_prod) as usize;
                 } else {
@@ -309,11 +309,8 @@ where
 
     fn invert_axis(&mut self, axis: Axis) {
         for &ax in &self.merged[axis.index()] {
-            if self.inverted[ax] == 0 {
-                self.inverted[ax] = 1;
-            } else {
-                self.inverted[ax] = 0;
-            }
+            let axis = Axis(ax);
+            self.inverted.write(axis, !self.inverted.read(axis));
         }
         self.inner.invert_axis(axis)
     }
