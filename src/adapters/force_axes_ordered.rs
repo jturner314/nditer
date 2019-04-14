@@ -1,5 +1,5 @@
-use crate::{CanMerge, DimensionExt, IntoAxesFor, NdProducer, NdReshape};
-use ndarray::{Axis, Dimension};
+use crate::{AxesMask, CanMerge, IntoAxesFor, NdProducer, NdReshape};
+use ndarray::{Axis, IxDyn};
 
 /// A wrapper that forces iteration to occur in order for each specified axis.
 ///
@@ -10,9 +10,8 @@ where
     T: NdReshape,
 {
     inner: T,
-    /// Whether axes are forbidden to be inverted (0 means inverting is okay; 1
-    /// means inverting is forbidden).
-    force_ordered: T::Dim,
+    /// Whether each axis must be iterated in order.
+    force_ordered: AxesMask<T::Dim, IxDyn>,
 }
 
 impl<T> ForceAxesOrdered<T>
@@ -20,9 +19,9 @@ where
     T: NdProducer,
 {
     pub(crate) fn new(inner: T, ordered_axes: impl IntoAxesFor<T::Dim>) -> Self {
-        let mut force_ordered = T::Dim::zeros(inner.ndim());
-        let axes = ordered_axes.into_axes_for(inner.ndim()).into_inner();
-        axes.visitv(|axis| force_ordered[axis] = 1);
+        let force_ordered = ordered_axes
+            .into_axes_mask(inner.ndim())
+            .into_dyn_num_true();
         ForceAxesOrdered {
             inner,
             force_ordered,
@@ -56,12 +55,12 @@ where
     }
 
     fn is_axis_ordered(&self, axis: Axis) -> bool {
-        self.inner.is_axis_ordered(axis) || self.force_ordered[axis.index()] != 0
+        self.inner.is_axis_ordered(axis) || self.force_ordered.read(axis)
     }
 
     fn invert_axis(&mut self, axis: Axis) {
         assert!(
-            self.force_ordered[axis.index()] == 0,
+            !self.force_ordered.read(axis),
             "Axis {} must be iterated in order",
             axis.index(),
         );
@@ -75,8 +74,8 @@ where
     fn merge_axes(&mut self, take: Axis, into: Axis) {
         // Propagate ordered constraint to `into` axis because movement along
         // `take` axis becomes movement along the `into` axis after merging.
-        if self.force_ordered[take.index()] != 0 {
-            self.force_ordered[into.index()] = 1;
+        if self.force_ordered.read(take) {
+            self.force_ordered.write(into, true);
         }
         self.inner.merge_axes(take, into)
     }

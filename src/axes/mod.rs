@@ -1,5 +1,6 @@
-use crate::SubDim;
-use ndarray::{Dimension, IntoDimension, Ix0};
+use crate::{DimensionExt, SubDim};
+use ndarray::{Axis, Dimension, IntoDimension, Ix0, IxDyn};
+use std::marker::PhantomData;
 
 pub use axes_for::AxesFor;
 
@@ -35,6 +36,140 @@ pub trait IntoAxesFor<D: Dimension> {
         AxesFor<D, Self::Axes>,
         AxesFor<D, <Self::IntoOthers as IntoAxesFor<D>>::Axes>,
     );
+
+    /// Converts `self` into a mask of unique axes for an object that has
+    /// dimensionality `D` and `for_ndim` dimensions.
+    ///
+    /// **Panics** if `for_ndim` is inconsistent with `D` or if any axes are
+    /// out-of-bounds for `for_ndim`.
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, Self::Axes>;
+}
+
+/// Mask of axes for an object of dimensionality `D`.
+///
+/// `X` indicates the number of elements that are `true`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AxesMask<D: Dimension, X: Dimension> {
+    /// Mask of axes. `1` represents `true`, and `0` represents `false`.
+    mask: D,
+    /// Number of elements that are true.
+    num_true: PhantomData<X>,
+}
+
+impl<D> AxesMask<D, Ix0>
+where
+    D: Dimension,
+{
+    /// Returns a mask of all `false` values.
+    ///
+    /// **Panics** if `ndim` is inconsistent with `D`.
+    pub fn all_false(ndim: usize) -> AxesMask<D, Ix0> {
+        AxesMask {
+            mask: D::zeros(ndim),
+            num_true: PhantomData,
+        }
+    }
+}
+
+impl<D> AxesMask<D, D>
+where
+    D: Dimension,
+{
+    /// Returns a mask of all `true` values.
+    ///
+    /// **Panics** if `ndim` is inconsistent with `D`.
+    pub fn all_true(ndim: usize) -> AxesMask<D, D> {
+        let mut mask = D::zeros(ndim);
+        mask.map_inplace(|m| *m = 1);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
+    }
+}
+
+impl<D, X> AxesMask<D, X>
+where
+    D: Dimension,
+    X: Dimension,
+{
+    /// Returns the inner representation of the mask.
+    #[inline]
+    pub fn into_inner(self) -> D {
+        self.mask
+    }
+
+    /// Returns the element of the mask corresponding to `axis`.
+    #[inline]
+    pub fn read(&self, axis: Axis) -> bool {
+        self.mask[axis.index()] != 0
+    }
+
+    /// Returns the number of dimensions this mask is for.
+    #[inline]
+    pub fn for_ndim(&self) -> usize {
+        self.mask.ndim()
+    }
+
+    /// Returns the number of elements that are `true`.
+    pub fn num_true(&self) -> usize {
+        if let Some(num_true) = X::NDIM {
+            num_true
+        } else {
+            self.mask.foldv(0, |acc, m| acc + m)
+        }
+    }
+
+    /// Converts the number of true values into `IxDyn`.
+    #[inline]
+    pub fn into_dyn_num_true(self) -> AxesMask<D, IxDyn> {
+        AxesMask {
+            mask: self.mask,
+            num_true: PhantomData,
+        }
+    }
+
+    /// Applies the mapping to the elements of the mask.
+    pub fn mapv_to_dim<F>(&self, mut f: F) -> D
+    where
+        F: FnMut(bool) -> usize,
+    {
+        self.mask.mapv(move |m| f(m != 0))
+    }
+
+    /// Calls `f` for each axis index and element value.
+    pub fn indexed_visitv<F>(&self, mut f: F)
+    where
+        F: FnMut(Axis, bool),
+    {
+        self.mask.indexed_visitv(move |axis, m| f(axis, m != 0))
+    }
+}
+
+impl<D> AxesMask<D, IxDyn>
+where
+    D: Dimension,
+{
+    /// Writes the element of the mask corresponding to `axis`.
+    #[inline]
+    pub fn write(&mut self, axis: Axis, value: bool) {
+        self.mask[axis.index()] = value as usize;
+    }
+}
+
+impl<D, X> From<AxesFor<D, X>> for AxesMask<D, X>
+where
+    D: Dimension,
+    X: Dimension,
+{
+    fn from(axes_for: AxesFor<D, X>) -> AxesMask<D, X> {
+        let mut mask = D::zeros(axes_for.for_ndim());
+        axes_for.into_inner().visitv(|ax| mask[ax] = 1);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
+    }
 }
 
 /// A list of unique axes.
@@ -82,6 +217,15 @@ where
     /// The "other" axes are guaranteed to be in order.
     fn into_these_and_other_axes_for(self, for_ndim: usize) -> (AxesFor<D, X>, AxesFor<D, E>) {
         AxesFor::these_and_others_from_axes(self, for_ndim)
+    }
+
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, X> {
+        let mut mask = D::zeros(for_ndim);
+        self.0.visitv(|ax| mask[ax] = 1);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
     }
 }
 
@@ -131,6 +275,16 @@ where
         let (others, these) = AxesFor::these_and_others_from_axes(Axes(self.0), for_ndim);
         (these, others)
     }
+
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, X> {
+        let mut mask = D::zeros(for_ndim);
+        mask.map_inplace(|m| *m = 1);
+        self.0.visitv(|ax| mask[ax] = 0);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
+    }
 }
 
 /// Represents all axes for an object.
@@ -169,6 +323,10 @@ where
         let others = AxesNone.into_axes_for(for_ndim);
         (these, others)
     }
+
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, D> {
+        AxesMask::all_true(for_ndim)
+    }
 }
 
 /// Represents none of the axes for an object.
@@ -200,6 +358,10 @@ where
         let these = self.into_axes_for(for_ndim);
         let others = AxesAll.into_axes_for(for_ndim);
         (these, others)
+    }
+
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, Ix0> {
+        AxesMask::all_false(for_ndim)
     }
 }
 

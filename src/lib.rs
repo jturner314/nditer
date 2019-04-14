@@ -21,7 +21,7 @@ use self::adapters::{
     BroadcastProducer, Cloned, FoldAxesProducer, ForceAxesOrdered, IndexedProducer, Inspect, Map,
     SelectIndicesAxis, Zip,
 };
-use self::axes::AxesFor;
+use self::axes::{AxesFor, AxesMask};
 use self::errors::{BroadcastError, OrderedAxisError};
 use self::pairwise_sum::pairwise_sum;
 use itertools::izip;
@@ -1020,10 +1020,20 @@ pub(crate) trait DimensionExt {
     where
         F: FnMut(usize) -> usize;
 
+    /// Applies `f` to each element by mutable reference.
+    fn map_inplace<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize);
+
     /// Calls `f` for each element by value.
     fn visitv<F>(&self, f: F)
     where
         F: FnMut(usize);
+
+    /// Calls `f` for each axis index and element value.
+    fn indexed_visitv<F>(&self, f: F)
+    where
+        F: FnMut(Axis, usize);
 }
 
 impl<D: Dimension> DimensionExt for D {
@@ -1045,11 +1055,28 @@ impl<D: Dimension> DimensionExt for D {
         out
     }
 
+    fn map_inplace<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize),
+    {
+        self.slice_mut().iter_mut().for_each(f)
+    }
+
     fn visitv<F>(&self, f: F)
     where
         F: FnMut(usize),
     {
         self.slice().iter().cloned().for_each(f)
+    }
+
+    fn indexed_visitv<F>(&self, mut f: F)
+    where
+        F: FnMut(Axis, usize),
+    {
+        self.slice()
+            .iter()
+            .enumerate()
+            .for_each(move |(ax, &elem)| f(Axis(ax), elem))
     }
 }
 
