@@ -186,7 +186,7 @@ where
 
         // Pass through to inner producer if necessary.
         let pass_take = self.pass_through[take.index()];
-        let pass_into = self.pass_through[take.index()];
+        let pass_into = self.pass_through[into.index()];
         match (pass_take, pass_into) {
             (1, 1) => {
                 let inner_take = Axis(self.outer_to_inner[take.index()]);
