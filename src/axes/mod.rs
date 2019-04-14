@@ -402,10 +402,8 @@ mod tests {
         assert_eq!(this.num_axes(), 3);
         assert_eq!(this.into_inner(), Ix3(2, 3, 1));
 
-        let other = IntoAxesFor::<Ix6>::into_axes_for(
-            IntoAxesFor::<Ix6>::into_others(axes((2, 5, 1))),
-            6,
-        );
+        let other =
+            IntoAxesFor::<Ix6>::into_axes_for(IntoAxesFor::<Ix6>::into_others(axes((2, 5, 1))), 6);
         assert_eq!(other.for_ndim(), 6);
         assert_eq!(other.num_axes(), 3);
         assert_eq!(other.into_inner(), Ix3(0, 3, 4));
@@ -484,10 +482,8 @@ mod tests {
         assert_eq!(other.num_axes(), 0);
         assert_eq!(other.into_inner(), Ix0());
 
-        let other = IntoAxesFor::<IxDyn>::into_axes_for(
-            IntoAxesFor::<IxDyn>::into_others(axes_all()),
-            5,
-        );
+        let other =
+            IntoAxesFor::<IxDyn>::into_axes_for(IntoAxesFor::<IxDyn>::into_others(axes_all()), 5);
         assert_eq!(other.for_ndim(), 5);
         assert_eq!(other.num_axes(), 0);
         assert_eq!(other.into_inner(), Ix0());
@@ -511,10 +507,8 @@ mod tests {
         assert_eq!(other.num_axes(), 5);
         assert_eq!(other.into_inner(), Ix5(0, 1, 2, 3, 4));
 
-        let other = IntoAxesFor::<IxDyn>::into_axes_for(
-            IntoAxesFor::<IxDyn>::into_others(axes_none()),
-            5,
-        );
+        let other =
+            IntoAxesFor::<IxDyn>::into_axes_for(IntoAxesFor::<IxDyn>::into_others(axes_none()), 5);
         assert_eq!(other.for_ndim(), 5);
         assert_eq!(other.num_axes(), 5);
         assert_eq!(other.into_inner(), IxDyn(&[0, 1, 2, 3, 4]));

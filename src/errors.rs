@@ -17,7 +17,11 @@ pub struct BroadcastError {
 }
 
 impl BroadcastError {
-    pub(crate) fn new<O, D>(original: &O, desired: &D, axes_mapping: &AxesFor<D, O>) -> BroadcastError
+    pub(crate) fn new<O, D>(
+        original: &O,
+        desired: &D,
+        axes_mapping: &AxesFor<D, O>,
+    ) -> BroadcastError
     where
         O: Dimension,
         D: Dimension,

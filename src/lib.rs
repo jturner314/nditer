@@ -12,7 +12,7 @@
 #![deny(missing_docs)]
 
 pub use self::adapters::{into_repeat_with, repeat_with};
-pub use self::axes::{axes, axes_all, axes_none, axes_except, IntoAxesFor};
+pub use self::axes::{axes, axes_all, axes_except, axes_none, IntoAxesFor};
 pub use self::dim_traits::SubDim;
 pub use self::impl_ndarray::ArrayBaseExt;
 pub use self::iter::Iter;
