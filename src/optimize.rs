@@ -1,6 +1,6 @@
+use crate::{assert_valid_unique_axes, AxesMask, CanMerge, Layout, NdReshape};
 use itertools::izip;
 use ndarray::{Axis, Dimension, IxDyn};
-use crate::{assert_valid_unique_axes, AxesMask, CanMerge, Layout, NdReshape};
 
 /// Optimizes the producer, preserving order, and returns the order for
 /// iterating over axes (assuming the last index moves the fastest).
@@ -393,8 +393,8 @@ fn roll<T>(slice: &mut [T], mut shift: isize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::prelude::*;
     use crate::{ArrayBaseExt, IntoNdProducer};
+    use ndarray::prelude::*;
 
     #[test]
     fn optimize_any_ord_ix4_c() {
