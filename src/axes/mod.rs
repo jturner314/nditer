@@ -292,6 +292,7 @@ where
 pub struct AxesAll;
 
 /// Creates a representation of all the axes for an object.
+#[inline]
 pub fn axes_all() -> AxesAll {
     AxesAll
 }
@@ -334,6 +335,7 @@ where
 pub struct AxesNone;
 
 /// Creates a representation of none of the axes for an object.
+#[inline]
 pub fn axes_none() -> AxesNone {
     AxesNone
 }

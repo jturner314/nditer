@@ -1,6 +1,6 @@
-use crate::axes::Axes;
-use crate::DimensionExt;
-use ndarray::Dimension;
+use crate::axes::{Axes, AxesExcept, AxesMask, IntoAxesFor};
+use crate::{DimensionExt, SubDim};
+use ndarray::{Axis, Dimension};
 use std::marker::PhantomData;
 use std::ops::Index;
 
@@ -130,6 +130,35 @@ where
         self.axes.0.ndim()
     }
 
+    /// Swaps the axes at the given indices.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.axes.0.slice_mut().swap(a, b)
+    }
+
+    /// Rolls the axes at the given indices by the given shift.
+    pub(crate) fn roll<I>(&mut self, indices: I, shift: isize)
+    where
+        I: std::slice::SliceIndex<[usize], Output = [usize]>,
+    {
+        roll(&mut self.axes.0.slice_mut()[indices], shift)
+    }
+
+    /// Sorts the axes.
+    pub fn sort_unstable(&mut self) {
+        self.axes.0.slice_mut().sort_unstable()
+    }
+
+    /// Sorts the axes with a comparator function.
+    pub fn sort_unstable_by<F>(&mut self, mut compare: F)
+    where
+        F: FnMut(Axis, Axis) -> std::cmp::Ordering,
+    {
+        self.axes
+            .0
+            .slice_mut()
+            .sort_unstable_by(move |&a, &b| compare(Axis(a), Axis(b)))
+    }
+
     /// Returns a slice of the axes.
     #[inline]
     pub(crate) fn slice(&self) -> &[usize] {
@@ -140,6 +169,22 @@ where
     #[inline]
     pub(crate) fn into_inner(self) -> X {
         self.axes.0
+    }
+
+    /// Calls `f` for each of the axes.
+    pub fn visitv<F>(&self, mut f: F)
+    where
+        F: FnMut(Axis),
+    {
+        self.axes.0.visitv(move |ax| f(Axis(ax)))
+    }
+
+    /// Applies the mapping to the axes.
+    pub fn mapv_to_dim<F>(&self, mut f: F) -> X
+    where
+        F: FnMut(Axis) -> usize,
+    {
+        self.axes.0.mapv(move |ax| f(Axis(ax)))
     }
 }
 
@@ -154,5 +199,131 @@ where
     #[inline]
     fn index(&self, index: usize) -> &usize {
         &self.axes.0[index]
+    }
+}
+
+impl<D, X, E> IntoAxesFor<D> for AxesFor<D, X>
+where
+    D: Dimension + SubDim<X, Out = E>,
+    X: Dimension,
+    E: Dimension,
+{
+    type Axes = X;
+    // TODO: Don't lose information (D validation) here.
+    type IntoOthers = AxesExcept<X>;
+
+    fn into_others(self) -> AxesExcept<X> {
+        IntoAxesFor::<D>::into_others(self.axes)
+    }
+
+    fn into_axes_for(self, for_ndim: usize) -> AxesFor<D, Self::Axes> {
+        assert_eq!(for_ndim, self.for_ndim);
+        self
+    }
+
+    fn into_these_and_other_axes_for(self, for_ndim: usize) -> (AxesFor<D, X>, AxesFor<D, E>) {
+        assert_eq!(for_ndim, self.for_ndim);
+        let others = unsafe { AxesFor::others_from_axes_unchecked(&self.axes, for_ndim) };
+        (self, others)
+    }
+
+    fn into_axes_mask(self, for_ndim: usize) -> AxesMask<D, X> {
+        assert_eq!(for_ndim, self.for_ndim);
+        self.axes.into_axes_mask(for_ndim)
+    }
+}
+
+/// Rolls the slice by the given shift.
+///
+/// Rolling is like a shift, except that elements shifted off the end are moved
+/// to the other end. Rolling is performed in the direction of `shift`
+/// (positive for right, negative for left).
+fn roll<T>(slice: &mut [T], mut shift: isize) {
+    let len = slice.len();
+    if len <= 1 {
+        return;
+    }
+
+    // Minimize the absolute shift.
+    shift = shift % len as isize;
+    if shift > len as isize / 2 {
+        shift -= len as isize;
+    } else if shift < -(len as isize) / 2 {
+        shift += len as isize;
+    }
+
+    // Perform the roll.
+    if shift >= 0 {
+        for _ in 0..shift {
+            for i in 0..(len - 1) {
+                slice.swap(i, len - 1);
+            }
+        }
+    } else {
+        for _ in 0..(-shift) {
+            for i in (1..len).rev() {
+                slice.swap(i, 0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::roll;
+
+    #[test]
+    fn roll_empty() {
+        for shift in -2..2 {
+            let mut data: [i32; 0] = [];
+            roll(&mut data, shift);
+            assert_eq!(data, []);
+        }
+    }
+
+    #[test]
+    fn roll_one_element() {
+        for shift in -2..2 {
+            let mut data = [1];
+            roll(&mut data, shift);
+            assert_eq!(data, [1]);
+        }
+    }
+
+    #[test]
+    fn roll_two_elements() {
+        for shift in -3..3 {
+            let mut data = [1, 2];
+            roll(&mut data, shift);
+            if (shift % 2).abs() == 0 {
+                assert_eq!(data, [1, 2]);
+            } else {
+                assert_eq!(data, [2, 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn roll_five_elements() {
+        fn check_roll(orig: &mut [i32], shift: isize, rolled: &[i32]) {
+            roll(orig, shift);
+            println!("shift = {}", shift);
+            assert_eq!(orig, rolled);
+        }
+        check_roll(&mut [1, 2, 3, 4, 5], -7, &[3, 4, 5, 1, 2]);
+        check_roll(&mut [1, 2, 3, 4, 5], -6, &[2, 3, 4, 5, 1]);
+        check_roll(&mut [1, 2, 3, 4, 5], -5, &[1, 2, 3, 4, 5]);
+        check_roll(&mut [1, 2, 3, 4, 5], -4, &[5, 1, 2, 3, 4]);
+        check_roll(&mut [1, 2, 3, 4, 5], -3, &[4, 5, 1, 2, 3]);
+        check_roll(&mut [1, 2, 3, 4, 5], -2, &[3, 4, 5, 1, 2]);
+        check_roll(&mut [1, 2, 3, 4, 5], -1, &[2, 3, 4, 5, 1]);
+        check_roll(&mut [1, 2, 3, 4, 5], 0, &[1, 2, 3, 4, 5]);
+        check_roll(&mut [1, 2, 3, 4, 5], 1, &[5, 1, 2, 3, 4]);
+        check_roll(&mut [1, 2, 3, 4, 5], 2, &[4, 5, 1, 2, 3]);
+        check_roll(&mut [1, 2, 3, 4, 5], 3, &[3, 4, 5, 1, 2]);
+        check_roll(&mut [1, 2, 3, 4, 5], 4, &[2, 3, 4, 5, 1]);
+        check_roll(&mut [1, 2, 3, 4, 5], 5, &[1, 2, 3, 4, 5]);
+        check_roll(&mut [1, 2, 3, 4, 5], 6, &[5, 1, 2, 3, 4]);
+        check_roll(&mut [1, 2, 3, 4, 5], 7, &[4, 5, 1, 2, 3]);
     }
 }

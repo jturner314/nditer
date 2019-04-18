@@ -1,5 +1,4 @@
-use crate::{assert_valid_unique_axes, AxesMask, CanMerge, Layout, NdReshape};
-use itertools::izip;
+use crate::{axes_all, AxesFor, AxesMask, CanMerge, IntoAxesFor, Layout, NdReshape};
 use ndarray::{Axis, Dimension, IxDyn};
 
 /// Optimizes the producer, preserving order, and returns the order for
@@ -7,40 +6,32 @@ use ndarray::{Axis, Dimension, IxDyn};
 ///
 /// This method may change the shape of the producer but not the order of
 /// iteration.
-pub(crate) fn optimize_same_ord<T>(producer: &mut T) -> T::Dim
+pub(crate) fn optimize_same_ord<T>(producer: &mut T) -> AxesFor<T::Dim, T::Dim>
 where
     T: NdReshape + ?Sized,
 {
     let ndim = producer.ndim();
-    if ndim <= 1 {
-        return T::Dim::zeros(ndim);
-    }
-    for axis in 0..(ndim - 1) {
-        match producer.can_merge_axes(Axis(axis), Axis(axis + 1)) {
-            CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
-                producer.merge_axes(Axis(axis), Axis(axis + 1))
+    if ndim > 1 {
+        for axis in 0..(ndim - 1) {
+            match producer.can_merge_axes(Axis(axis), Axis(axis + 1)) {
+                CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
+                    producer.merge_axes(Axis(axis), Axis(axis + 1))
+                }
+                CanMerge::IfOneInverted | CanMerge::Never => {}
             }
-            CanMerge::IfOneInverted | CanMerge::Never => {}
         }
     }
-    let mut axes = T::Dim::zeros(ndim);
-    for (i, a) in axes.slice_mut().iter_mut().enumerate() {
-        *a = i;
-    }
-    axes
+    axes_all().into_axes_for(ndim)
 }
 
 /// Executes `optimize_any_ord_axes` for all axes and returns the suggested
 /// iteration order.
-pub(crate) fn optimize_any_ord<T>(producer: &mut T) -> T::Dim
+pub(crate) fn optimize_any_ord<T>(producer: &mut T) -> AxesFor<T::Dim, T::Dim>
 where
     T: NdReshape + ?Sized,
 {
-    let mut axes = T::Dim::zeros(producer.ndim());
-    for (i, ax) in axes.slice_mut().iter_mut().enumerate() {
-        *ax = i;
-    }
-    unsafe { optimize_any_ord_axes_unchecked(producer, &mut axes) };
+    let mut axes = axes_all().into_axes_for(producer.ndim());
+    optimize_any_ord_axes(producer, &mut axes);
     axes
 }
 
@@ -59,21 +50,7 @@ where
 /// (except for axes of length <= 1, which are positioned as outer axes). This
 /// isn't necessarily the optimal iteration order, but it should be a
 /// reasonable heuristic in most cases.
-///
-/// **Panics** if any of the axes in `axes` are out of bounds or if an axis is
-/// repeated more than once.
-pub(crate) fn optimize_any_ord_axes<T, D>(producer: &mut T, axes: &mut D)
-where
-    T: NdReshape + ?Sized,
-    D: Dimension,
-{
-    assert_valid_unique_axes::<T::Dim>(producer.ndim(), axes.slice());
-    unsafe { optimize_any_ord_axes_unchecked(producer, axes) }
-}
-
-/// `unsafe` because `axes` are not checked to ensure that they're in-bounds
-/// and not repeated.
-unsafe fn optimize_any_ord_axes_unchecked<T, D>(producer: &mut T, axes: &mut D)
+pub(crate) fn optimize_any_ord_axes<T, D>(producer: &mut T, axes: &mut AxesFor<T::Dim, D>)
 where
     T: NdReshape + ?Sized,
     D: Dimension,
@@ -83,14 +60,14 @@ where
 
     // TODO: specialize for ndim == 3?
 
-    let ndim = axes.ndim();
-    if ndim <= 1 {
+    let num_axes = axes.num_axes();
+    if num_axes <= 1 {
         return;
-    } else if ndim == 2 {
+    } else if num_axes == 2 {
         // Reorder axes according to shape and strides.
         let abs_strides = producer.approx_abs_strides();
         if abs_strides[axes[0]] < abs_strides[axes[1]] && producer.len_of(Axis(axes[0])) > 1 {
-            axes.slice_mut().swap(0, 1);
+            axes.swap(0, 1);
         }
 
         // Try merging axes.
@@ -119,7 +96,9 @@ where
     {
         let shape = producer.shape();
         let abs_strides = producer.approx_abs_strides();
-        axes.slice_mut().sort_unstable_by(|&a, &b| {
+        axes.sort_unstable_by(|a, b| {
+            let a = a.index();
+            let b = b.index();
             if shape[a] <= 1 || shape[b] <= 1 {
                 shape[a].cmp(&shape[b])
             } else {
@@ -136,7 +115,7 @@ where
         .enumerate()
         .find(|(_, &ax)| producer.len_of(Axis(ax)) > 1)
     {
-        for i in (rest + 1)..ndim {
+        for i in (rest + 1)..num_axes {
             let mut t = rest;
             while t < i {
                 let take = Axis(axes[t]);
@@ -145,21 +124,21 @@ where
                 match can_merge {
                     CanMerge::IfUnchangedOrBothInverted | CanMerge::Always => {
                         producer.merge_axes(take, into);
-                        roll(&mut axes.slice_mut()[rest..=t], 1);
+                        axes.roll(rest..=t, 1);
                         rest += 1;
                         t = rest;
                     }
                     CanMerge::IfOneInverted if !producer.is_axis_ordered(take) => {
                         producer.invert_axis(take);
                         producer.merge_axes(take, into);
-                        roll(&mut axes.slice_mut()[rest..=t], 1);
+                        axes.roll(rest..=t, 1);
                         rest += 1;
                         t = rest;
                     }
                     CanMerge::IfOneInverted if !producer.is_axis_ordered(into) => {
                         producer.invert_axis(into);
                         producer.merge_axes(take, into);
-                        roll(&mut axes.slice_mut()[rest..=t], 1);
+                        axes.roll(rest..=t, 1);
                         rest += 1;
                         t = rest;
                     }
@@ -172,14 +151,13 @@ where
     }
 }
 
-pub(crate) fn optimize_any_ord_with_layout<T>(producer: &mut T) -> (T::Dim, Layout<T::Dim>)
+pub(crate) fn optimize_any_ord_with_layout<T>(
+    producer: &mut T,
+) -> (AxesFor<T::Dim, T::Dim>, Layout<T::Dim>)
 where
     T: NdReshape + ?Sized,
 {
-    let mut axes = T::Dim::zeros(producer.ndim());
-    for (i, ax) in axes.slice_mut().iter_mut().enumerate() {
-        *ax = i;
-    }
+    let mut axes = axes_all().into_axes_for(producer.ndim());
     let layout = optimize_any_ord_axes_with_layout(producer, &mut axes);
     (axes, layout)
 }
@@ -189,7 +167,10 @@ where
 ///
 /// See `Layout` for more information about the return value. Note that the
 /// shape of `Layout` matches the original order of `axes`.
-pub(crate) fn optimize_any_ord_axes_with_layout<T, D>(producer: &mut T, axes: &mut D) -> Layout<D>
+pub(crate) fn optimize_any_ord_axes_with_layout<T, D>(
+    producer: &mut T,
+    axes: &mut AxesFor<T::Dim, D>,
+) -> Layout<D>
 where
     T: NdReshape + ?Sized,
     D: Dimension,
@@ -206,7 +187,7 @@ where
 {
     inner: &'a mut T,
     /// Iteration axes before optimization.
-    orig_axes: D,
+    orig_axes: AxesFor<T::Dim, D>,
     /// Shape of the producer before optimization.
     orig_shape: T::Dim,
     /// Whether the axes of the producer have been inverted.
@@ -220,7 +201,7 @@ where
     T: NdReshape + ?Sized,
     D: Dimension,
 {
-    fn new(inner: &'a mut T, orig_axes: D) -> OptimRecorder<'a, T, D> {
+    fn new(inner: &'a mut T, orig_axes: AxesFor<T::Dim, D>) -> OptimRecorder<'a, T, D> {
         OptimRecorder {
             orig_axes,
             orig_shape: inner.shape(),
@@ -231,12 +212,12 @@ where
     }
 
     /// `optim_axes` is the list of axes after optimization (in iteration order).
-    fn into_layout(self, optim_axes: &D) -> Layout<D> {
+    fn into_layout(self, optim_axes: &AxesFor<T::Dim, D>) -> Layout<D> {
         if cfg!(debug_assertions) {
             let mut orig_axes = self.orig_axes.clone();
-            orig_axes.slice_mut().sort();
+            orig_axes.sort_unstable();
             let mut optim_axes = optim_axes.clone();
-            optim_axes.slice_mut().sort();
+            optim_axes.sort_unstable();
             debug_assert_eq!(orig_axes, optim_axes);
         }
 
@@ -245,7 +226,7 @@ where
         // axes have been merged together in the producer.) Also observe that
         // `iter_axes` may contain fewer axes than the underlying producer. (It
         // only contains those axes that will be iterated over.)
-        let mut iter_axes = D::zeros(optim_axes.ndim());
+        let mut iter_axes = D::zeros(optim_axes.num_axes());
         iter_axes
             .slice_mut()
             .iter_mut()
@@ -259,10 +240,9 @@ where
             )
             .for_each(|(dst, &src)| *dst = src);
 
-        let mut shape = D::zeros(self.orig_axes.ndim());
-        for (&ax, len) in izip!(self.orig_axes.slice(), shape.slice_mut()) {
-            *len = self.orig_shape[ax];
-        }
+        let shape = self
+            .orig_axes
+            .mapv_to_dim(|axis| self.orig_shape[axis.index()]);
 
         let mut strides = D::zeros(shape.ndim());
         let mut offset = 0;
@@ -352,41 +332,6 @@ where
 
     fn ndim(&self) -> usize {
         self.inner.ndim()
-    }
-}
-
-/// Rolls the slice by the given shift.
-///
-/// Rolling is like a shift, except that elements shifted off the end are moved
-/// to the other end. Rolling is performed in the direction of `shift`
-/// (positive for right, negative for left).
-fn roll<T>(slice: &mut [T], mut shift: isize) {
-    let len = slice.len();
-    if len <= 1 {
-        return;
-    }
-
-    // Minimize the absolute shift.
-    shift = shift % len as isize;
-    if shift > len as isize / 2 {
-        shift -= len as isize;
-    } else if shift < -(len as isize) / 2 {
-        shift += len as isize;
-    }
-
-    // Perform the roll.
-    if shift >= 0 {
-        for _ in 0..shift {
-            for i in 0..(len - 1) {
-                slice.swap(i, len - 1);
-            }
-        }
-    } else {
-        for _ in 0..(-shift) {
-            for i in (1..len).rev() {
-                slice.swap(i, 0);
-            }
-        }
     }
 }
 
@@ -518,59 +463,4 @@ mod tests {
 
     // TODO: Test for `rec_axes_order` with axes not in order of descending
     // absolute stride.
-
-    #[test]
-    fn roll_empty() {
-        for shift in -2..2 {
-            let mut data: [i32; 0] = [];
-            roll(&mut data, shift);
-            assert_eq!(data, []);
-        }
-    }
-
-    #[test]
-    fn roll_one_element() {
-        for shift in -2..2 {
-            let mut data = [1];
-            roll(&mut data, shift);
-            assert_eq!(data, [1]);
-        }
-    }
-
-    #[test]
-    fn roll_two_elements() {
-        for shift in -3..3 {
-            let mut data = [1, 2];
-            roll(&mut data, shift);
-            if (shift % 2).abs() == 0 {
-                assert_eq!(data, [1, 2]);
-            } else {
-                assert_eq!(data, [2, 1]);
-            }
-        }
-    }
-
-    #[test]
-    fn roll_five_elements() {
-        fn check_roll(orig: &mut [i32], shift: isize, rolled: &[i32]) {
-            roll(orig, shift);
-            println!("shift = {}", shift);
-            assert_eq!(orig, rolled);
-        }
-        check_roll(&mut [1, 2, 3, 4, 5], -7, &[3, 4, 5, 1, 2]);
-        check_roll(&mut [1, 2, 3, 4, 5], -6, &[2, 3, 4, 5, 1]);
-        check_roll(&mut [1, 2, 3, 4, 5], -5, &[1, 2, 3, 4, 5]);
-        check_roll(&mut [1, 2, 3, 4, 5], -4, &[5, 1, 2, 3, 4]);
-        check_roll(&mut [1, 2, 3, 4, 5], -3, &[4, 5, 1, 2, 3]);
-        check_roll(&mut [1, 2, 3, 4, 5], -2, &[3, 4, 5, 1, 2]);
-        check_roll(&mut [1, 2, 3, 4, 5], -1, &[2, 3, 4, 5, 1]);
-        check_roll(&mut [1, 2, 3, 4, 5], 0, &[1, 2, 3, 4, 5]);
-        check_roll(&mut [1, 2, 3, 4, 5], 1, &[5, 1, 2, 3, 4]);
-        check_roll(&mut [1, 2, 3, 4, 5], 2, &[4, 5, 1, 2, 3]);
-        check_roll(&mut [1, 2, 3, 4, 5], 3, &[3, 4, 5, 1, 2]);
-        check_roll(&mut [1, 2, 3, 4, 5], 4, &[2, 3, 4, 5, 1]);
-        check_roll(&mut [1, 2, 3, 4, 5], 5, &[1, 2, 3, 4, 5]);
-        check_roll(&mut [1, 2, 3, 4, 5], 6, &[5, 1, 2, 3, 4]);
-        check_roll(&mut [1, 2, 3, 4, 5], 7, &[4, 5, 1, 2, 3]);
-    }
 }

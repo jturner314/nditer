@@ -4,7 +4,6 @@ use crate::{
     iter::IterBorrowed, optimize::optimize_any_ord_axes, AxesFor, CanMerge, DimensionExt,
     IntoAxesFor, IntoNdProducerWithShape, NdAccess, NdProducer, NdReshape, NdSource,
 };
-use itertools::izip;
 use ndarray::{Axis, Dimension};
 
 /// A producer that folds over a subset of axes of an inner producer.
@@ -77,7 +76,7 @@ where
     type Source = FoldAxesSource<P::Source, Df, I::Source, F>;
 
     fn into_source(mut self) -> Self::Source {
-        let mut fold_axes = self.fold_axes.into_inner();
+        let mut fold_axes = self.fold_axes;
         optimize_any_ord_axes(&mut self.inner, &mut fold_axes);
         FoldAxesSource::new(
             self.inner.into_source(),
@@ -172,7 +171,7 @@ where
 {
     inner: S,
     /// Axes (of the `inner` source) that are being folded over.
-    fold_axes: Df,
+    fold_axes: AxesFor<S::Dim, Df>,
     /// Lengths of the axes that are being folded over (in the same order as `fold_axes`).
     fold_axis_lens: Df,
     /// First index for the fold.
@@ -192,11 +191,17 @@ where
 {
     /// Creates a new `FoldAxesSource` instance. This is the only safe way to
     /// create a `FoldAxesSource` instance.
-    fn new(inner: S, fold_axes: Df, outer_to_inner: I::Dim, init: I, f: F) -> Self {
+    fn new(
+        inner: S,
+        fold_axes: AxesFor<S::Dim, Df>,
+        outer_to_inner: I::Dim,
+        init: I,
+        f: F,
+    ) -> Self {
         // Check that the ndims are consistent.
         assert!(inner.ndim() >= init.ndim());
         assert_eq!(init.ndim(), outer_to_inner.ndim());
-        assert_eq!(inner.ndim() - fold_axes.ndim(), outer_to_inner.ndim());
+        assert_eq!(inner.ndim() - fold_axes.num_axes(), outer_to_inner.ndim());
         // Check that the lengths of the axes common to `inner` and `init` are
         // consistent.
         for (outer_ax, &inner_ax) in outer_to_inner.slice().iter().enumerate() {
@@ -206,28 +211,25 @@ where
         // `outer_to_inner`.
         {
             let mut axes_used = S::Dim::zeros(inner.ndim());
-            fold_axes.visitv(|ax| axes_used[ax] += 1);
+            fold_axes.visitv(|axis| axes_used[axis.index()] += 1);
             outer_to_inner.visitv(|ax| axes_used[ax] += 1);
             axes_used.visitv(|usage_count| assert_eq!(usage_count, 1));
         }
         // Check that the lengths of all fold axes fit in `isize`. (See the
         // constraints of `IterBorrowed::from_raw_parts`, which is called in
         // `read_once_unchecked`.)
-        fold_axes.visitv(|ax| assert!(inner.len_of(Axis(ax)) <= std::isize::MAX as usize));
+        fold_axes.visitv(|axis| assert!(inner.len_of(axis) <= std::isize::MAX as usize));
         unsafe { FoldAxesSource::new_unchecked(inner, fold_axes, outer_to_inner, init, f) }
     }
 
     unsafe fn new_unchecked(
         inner: S,
-        fold_axes: Df,
+        fold_axes: AxesFor<S::Dim, Df>,
         outer_to_inner: I::Dim,
         init: I,
         f: F,
     ) -> Self {
-        let mut fold_axis_lens = Df::zeros(fold_axes.ndim());
-        for (len, &inner_ax) in izip!(fold_axis_lens.slice_mut(), fold_axes.slice()) {
-            *len = inner.len_of(Axis(inner_ax));
-        }
+        let fold_axis_lens = fold_axes.mapv_to_dim(|axis| inner.len_of(axis));
         FoldAxesSource {
             inner,
             fold_axes,

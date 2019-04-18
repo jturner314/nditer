@@ -1,4 +1,4 @@
-use crate::{assert_valid_unique_axes, DimensionExt, NdAccess, NdProducer, NdSource};
+use crate::{assert_valid_unique_axes, AxesFor, NdAccess, NdProducer, NdSource};
 use itertools::izip;
 use ndarray::{Axis, Dimension};
 
@@ -13,7 +13,7 @@ pub struct Iter<P: NdProducer> {
     /// not `Axis(3)`.
     ptr_idx: Option<(<P::Source as NdAccess>::Ptr, P::Dim)>,
     /// Axes to iterate over (outermost axis first).
-    axes: P::Dim,
+    axes: AxesFor<P::Dim, P::Dim>,
     /// Lengths of the axes (in order of `axes`).
     ///
     /// All axis lengths must be `<= isize::MAX` so that indices can be safely
@@ -30,11 +30,10 @@ impl<P: NdProducer> Iter<P> {
     ///
     /// **Panics** if any of the axes in `axes` are out of bounds, if an axis
     /// is repeated more than once, or if any axis length overflows `isize`.
-    pub(crate) fn new(producer: P, axes: P::Dim) -> Self {
+    pub(crate) fn new(producer: P, axes: AxesFor<P::Dim, P::Dim>) -> Self {
         let source = producer.into_source();
-        assert_valid_unique_axes::<P::Dim>(source.ndim(), axes.slice());
-        let axis_lens = axes.mapv(|axis| {
-            let axis_len = source.len_of(Axis(axis));
+        let axis_lens = axes.mapv_to_dim(|axis| {
+            let axis_len = source.len_of(axis);
             assert!(axis_len <= std::isize::MAX as usize);
             axis_len
         });
@@ -66,7 +65,7 @@ pub(crate) struct IterBorrowed<'a, S: 'a + NdSource, D: 'a + Dimension> {
     /// the progress of the iterator.
     ptr_idx: Option<(S::Ptr, D)>,
     /// Axes to iterate over (outermost axis first).
-    axes: &'a D,
+    axes: &'a AxesFor<S::Dim, D>,
     /// Lengths of the axes (in order of `axes`).
     ///
     /// All axis lengths must be `<= isize::MAX` so that indices can be safely
@@ -95,14 +94,12 @@ impl<'a, S: 'a + NdSource, D: 'a + Dimension> IterBorrowed<'a, S, D> {
     ///   locations reachable by offsetting the pointer to all remaining
     ///   indices within the `axis_lens` are also valid locations.
     ///
-    /// * The `axes` are unique, in-bounds axes for `source`.
-    ///
     /// * The `axis_lens` are no larger than the axis lengths of the `source`
     ///   for the given `axes`, and all axis lengths are `<= isize::MAX`.
     pub(crate) unsafe fn from_raw_parts(
         source: &'a mut S,
         ptr_idx: Option<(S::Ptr, D)>,
-        axes: &'a D,
+        axes: &'a AxesFor<S::Dim, D>,
         axis_lens: &'a D,
     ) -> Self {
         // A few sanity checks.
@@ -192,19 +189,19 @@ macro_rules! impl_iter {
             where
                 F: FnMut(B, Self::Item) -> B,
             {
-                debug_assert_eq!(self.axes.ndim(), self.axis_lens.ndim());
-                if self.axes.ndim() == 0 {
+                debug_assert_eq!(self.axes.num_axes(), self.axis_lens.ndim());
+                if self.axes.num_axes() == 0 {
                     let elem = self.next().unwrap();
                     debug_assert!(self.next().is_none());
                     return f(init, elem);
                 }
                 let mut acc = init;
-                let inner_unroll = self.axes.ndim() - 1;
+                let inner_unroll = self.axes.num_axes() - 1;
                 let inner_unroll_axis = Axis(self.axes[inner_unroll]);
                 let inner_unroll_len = self.axis_lens[inner_unroll];
                 if self.source.is_axis_contiguous(inner_unroll_axis) {
-                    if self.axes.ndim() >= 2 {
-                        let outer_unroll = self.axes.ndim() - 2;
+                    if self.axes.num_axes() >= 2 {
+                        let outer_unroll = self.axes.num_axes() - 2;
                         let outer_unroll_axis = Axis(self.axes[outer_unroll]);
                         let outer_unroll_len = self.axis_lens[outer_unroll];
                         loop {
@@ -265,8 +262,8 @@ macro_rules! impl_iter {
                         }
                     }
                 } else {
-                    if self.axes.ndim() >= 2 {
-                        let outer_unroll = self.axes.ndim() - 2;
+                    if self.axes.num_axes() >= 2 {
+                        let outer_unroll = self.axes.num_axes() - 2;
                         let outer_unroll_axis = Axis(self.axes[outer_unroll]);
                         let outer_unroll_len = self.axis_lens[outer_unroll];
                         loop {
