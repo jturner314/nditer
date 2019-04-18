@@ -1,4 +1,4 @@
-use crate::{assert_valid_unique_axes, optimize, DimensionExt, NdProducer, NdSource};
+use crate::{optimize, AxesFor, NdProducer, NdSource};
 use itertools::izip;
 use ndarray::{Axis, Dimension};
 use num_traits::Zero;
@@ -30,7 +30,7 @@ struct SourceSubset<'a, S: NdSource, D: Dimension> {
     /// empty.
     ptr: Option<S::Ptr>,
     /// The axes to iterate over, in order.
-    axes: &'a D,
+    axes: &'a AxesFor<S::Dim, D>,
     /// The lengths of the `axes`, all of which must be `<= isize::MAX`.
     // Implementation note: It would be nice to make this owned instead of a
     // mutable reference, but doing so requires it to be cloned when splitting
@@ -50,8 +50,8 @@ impl<'a, S: NdSource> SourceSubset<'a, S, S::Dim> {
     {
         let axes = optimize::optimize_any_ord(&mut producer);
         let mut source = producer.into_source();
-        let mut axis_lens = axes.mapv(|axis| {
-            let axis_len = source.len_of(Axis(axis));
+        let mut axis_lens = axes.mapv_to_dim(|axis| {
+            let axis_len = source.len_of(axis);
             assert!(axis_len <= std::isize::MAX as usize);
             axis_len
         });
@@ -86,12 +86,11 @@ impl<'a, S: NdSource, D: Dimension> SourceSubset<'a, S, D> {
     pub unsafe fn from_raw_parts(
         source: &'a mut S,
         ptr: Option<S::Ptr>,
-        axes: &'a D,
+        axes: &'a AxesFor<S::Dim, D>,
         axis_lens: &'a mut D,
     ) -> Self {
         // A few sanity checks.
         if cfg!(debug_assertions) {
-            assert_valid_unique_axes::<D>(source.ndim(), axes.slice());
             for (&ax, &axis_len) in izip!(axes.slice(), axis_lens.slice()) {
                 debug_assert!(axis_len <= source.len_of(Axis(ax)));
                 debug_assert!(axis_len <= std::isize::MAX as usize);
@@ -139,13 +138,13 @@ impl<'a, S: NdSource, D: Dimension> SourceSubset<'a, S, D> {
 
         // Skip over possible split axes that have length <= 1.
         let mut axis_index = min_split_axis_index;
-        while axis_lens[axis_index] <= 1 && axis_index < axes.ndim() - 1 {
+        while axis_lens[axis_index] <= 1 && axis_index < axes.num_axes() - 1 {
             axis_index += 1;
         }
 
         let axis = Axis(axes[axis_index]);
         let axis_len = axis_lens[axis_index];
-        if axis_index == self.axes.ndim() - 1 {
+        if axis_index == self.axes.num_axes() - 1 {
             unsafe { pairwise_sum_axis(source, ptr, axis, axis_len) }
         } else {
             debug_assert!(axis_len >= 2);
