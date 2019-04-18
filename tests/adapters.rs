@@ -1,5 +1,5 @@
 use ndarray::prelude::*;
-use nditer::{axes, into_repeat_with, ArrayBaseExt, IntoNdProducer, NdProducer};
+use nditer::{axes, into_repeat, ArrayBaseExt, IntoNdProducer, NdProducer};
 
 #[test]
 fn zip() {
@@ -55,8 +55,7 @@ fn fold_axes() {
     assert_eq!(
         arr.sum_axis(Axis(2)).sum_axis(Axis(0)),
         arr.producer()
-            .fold_axes(axes((2, 0)), into_repeat_with(|| 0), |acc, &elem| acc
-                + elem)
+            .fold_axes(axes((2, 0)), into_repeat(0), |acc, &elem| acc + elem)
             .collect_array()
     );
 }

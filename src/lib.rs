@@ -11,7 +11,7 @@
 
 #![deny(missing_docs)]
 
-pub use self::adapters::{into_repeat_with, repeat_with};
+pub use self::adapters::{into_repeat, into_repeat_with, repeat, repeat_with};
 pub use self::axes::{axes, axes_all, axes_except, axes_none, IntoAxesFor};
 pub use self::dim_traits::SubDim;
 pub use self::impl_ndarray::ArrayBaseExt;
@@ -415,16 +415,15 @@ pub trait NdProducer: NdReshape + Sized {
     ///
     /// ```
     /// use ndarray::array;
-    /// use nditer::{axes, ArrayBaseExt, NdProducer, into_repeat_with};
+    /// use nditer::{axes, ArrayBaseExt, NdProducer, into_repeat};
     ///
     /// let arr = array![
     ///     [[1, 2, 3], [4, 5, 6]],
     ///     [[7, 8, 9], [10, 11, 12]],
     /// ];
-    /// let zeros = into_repeat_with(|| 0);
     /// let sum = arr
     ///     .producer()
-    ///     .fold_axes(axes((0, 2)), zeros, |acc, &elem| acc + elem)
+    ///     .fold_axes(axes((0, 2)), into_repeat(0), |acc, &elem| acc + elem)
     ///     .collect_array();
     /// assert_eq!(sum, array![1 + 2 + 3 + 7 + 8 + 9, 4 + 5 + 6 + 10 + 11 + 12]);
     /// ```
