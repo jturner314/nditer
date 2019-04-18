@@ -50,6 +50,8 @@ where
 /// (except for axes of length <= 1, which are positioned as outer axes). This
 /// isn't necessarily the optimal iteration order, but it should be a
 /// reasonable heuristic in most cases.
+///
+/// **Panics** if `axes.for_ndim() != producer.ndim()`.
 pub(crate) fn optimize_any_ord_axes<T, D>(producer: &mut T, axes: &mut AxesFor<T::Dim, D>)
 where
     T: NdReshape + ?Sized,
@@ -59,6 +61,8 @@ where
     // costly) optimizations?
 
     // TODO: specialize for ndim == 3?
+
+    assert_eq!(producer.ndim(), axes.for_ndim());
 
     let num_axes = axes.num_axes();
     if num_axes <= 1 {
