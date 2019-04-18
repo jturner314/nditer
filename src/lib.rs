@@ -990,22 +990,6 @@ pub struct Layout<D: Dimension> {
     pub offset: isize,
 }
 
-/// Asserts that all axes are valid for dimension `D` with `ndim` dimensions
-/// and that none are repeated. (Note that this also implies that the
-/// `axes.len()` is ensured to be <= `ndim`.)
-///
-/// **Panics** if this is not the case.
-pub(crate) fn assert_valid_unique_axes<D: Dimension>(ndim: usize, axes: &[usize]) {
-    let mut usage_counts = D::zeros(ndim);
-    for &axis in axes {
-        assert_eq!(
-            usage_counts[axis], 0,
-            "Each axis must be listed no more than once."
-        );
-        usage_counts[axis] = 1;
-    }
-}
-
 /// Extension methods for `Dimension` types.
 pub(crate) trait DimensionExt {
     /// Applies the fold to the values and returns the result.

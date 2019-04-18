@@ -91,6 +91,7 @@ impl<'a, S: NdSource, D: Dimension> SourceSubset<'a, S, D> {
     ) -> Self {
         // A few sanity checks.
         if cfg!(debug_assertions) {
+            debug_assert_eq!(source.ndim(), axes.for_ndim());
             for (&ax, &axis_len) in izip!(axes.slice(), axis_lens.slice()) {
                 debug_assert!(axis_len <= source.len_of(Axis(ax)));
                 debug_assert!(axis_len <= std::isize::MAX as usize);

@@ -1,4 +1,4 @@
-use crate::{assert_valid_unique_axes, AxesFor, NdAccess, NdProducer, NdSource};
+use crate::{AxesFor, NdAccess, NdProducer, NdSource};
 use itertools::izip;
 use ndarray::{Axis, Dimension};
 
@@ -28,10 +28,12 @@ impl<P: NdProducer> Iter<P> {
     ///
     /// `axes` must be a subset of the axes of the producer.
     ///
-    /// **Panics** if any of the axes in `axes` are out of bounds, if an axis
-    /// is repeated more than once, or if any axis length overflows `isize`.
+    /// **Panics** if `axes.for_ndim()` does not match the dimensionality of
+    /// the source or if any axis length overflows `isize`.
     pub(crate) fn new(producer: P, axes: AxesFor<P::Dim, P::Dim>) -> Self {
         let source = producer.into_source();
+        assert_eq!(source.ndim(), axes.for_ndim());
+        debug_assert_eq!(source.ndim(), axes.num_axes());
         let axis_lens = axes.mapv_to_dim(|axis| {
             let axis_len = source.len_of(axis);
             assert!(axis_len <= std::isize::MAX as usize);
@@ -94,6 +96,8 @@ impl<'a, S: 'a + NdSource, D: 'a + Dimension> IterBorrowed<'a, S, D> {
     ///   locations reachable by offsetting the pointer to all remaining
     ///   indices within the `axis_lens` are also valid locations.
     ///
+    /// * The `axes` are unique, in-bounds axes for `source`.
+    ///
     /// * The `axis_lens` are no larger than the axis lengths of the `source`
     ///   for the given `axes`, and all axis lengths are `<= isize::MAX`.
     pub(crate) unsafe fn from_raw_parts(
@@ -104,7 +108,7 @@ impl<'a, S: 'a + NdSource, D: 'a + Dimension> IterBorrowed<'a, S, D> {
     ) -> Self {
         // A few sanity checks.
         if cfg!(debug_assertions) {
-            assert_valid_unique_axes::<S::Dim>(source.ndim(), axes.slice());
+            debug_assert_eq!(source.ndim(), axes.for_ndim());
             for (&ax, &axis_len) in izip!(axes.slice(), axis_lens.slice()) {
                 debug_assert!(axis_len <= source.len_of(Axis(ax)));
                 debug_assert!(axis_len <= std::isize::MAX as usize);
