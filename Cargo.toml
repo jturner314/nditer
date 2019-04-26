@@ -12,6 +12,7 @@ num-traits = "0.2"
 [dev-dependencies]
 criterion = "0.2"
 ndarray-rand = "0.11"
+proptest = "0.9"
 quickcheck = "0.8"
 quickcheck_macros = "0.8"
 rand = "0.7"

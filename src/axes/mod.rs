@@ -137,6 +137,14 @@ where
         self.mask.mapv(move |m| f(m != 0))
     }
 
+    /// Applies the mapping to the indices and elements of the mask.
+    pub fn indexed_mapv_to_dim<F>(&self, mut f: F) -> D
+    where
+        F: FnMut(Axis, bool) -> usize,
+    {
+        self.mask.indexed_mapv(move |axis, m| f(axis, m != 0))
+    }
+
     /// Calls `f` for each axis index and element value.
     pub fn indexed_visitv<F>(&self, mut f: F)
     where

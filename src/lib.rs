@@ -1003,6 +1003,12 @@ pub(crate) trait DimensionExt {
     where
         F: FnMut(usize) -> usize;
 
+    /// Applies `f` to each axis and element by value and creates a new
+    /// instance with the results.
+    fn indexed_mapv<F>(&self, f: F) -> Self
+    where
+        F: FnMut(Axis, usize) -> usize;
+
     /// Applies `f` to each element by mutable reference.
     fn map_inplace<F>(&mut self, f: F)
     where
@@ -1038,6 +1044,17 @@ impl<D: Dimension> DimensionExt for D {
         out
     }
 
+    fn indexed_mapv<F>(&self, mut f: F) -> Self
+    where
+        F: FnMut(Axis, usize) -> usize,
+    {
+        let mut out = Self::zeros(self.ndim());
+        for (ax, &elem) in self.slice().iter().enumerate() {
+            out[ax] = f(Axis(ax), elem);
+        }
+        out
+    }
+
     fn map_inplace<F>(&mut self, f: F)
     where
         F: FnMut(&mut usize),
@@ -1068,6 +1085,8 @@ mod axes;
 mod dim_traits;
 pub mod errors;
 mod impl_ndarray;
+#[cfg(test)]
+mod impl_proptest;
 mod iter;
 mod optimize;
 mod pairwise_sum;
