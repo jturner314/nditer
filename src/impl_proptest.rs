@@ -1,4 +1,4 @@
-use crate::{AxesFor, AxesMask, DimensionExt};
+use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor};
 use itertools::{izip, Itertools};
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, ShapeBuilder, Slice,
@@ -76,12 +76,12 @@ enum ShrinkAction<D: Dimension> {
     UninvertAxis(Axis),
     RemoveStep(Axis),
     RemoveBorders(Axis),
-    PartiallySortAxes, // FIXME
+    SortAxes, // FIXME
     // BisectProportional,
     // BisectAxis(Axis),
     /// Shrink the element at the given index in the current array.
     ///
-    /// Note that the index is for `.current()`, not `all_elements`.
+    /// Note that the index is for `.all_current_trees()`, not `all_base_trees`.
     ShrinkElement(D),
 }
 
@@ -111,10 +111,10 @@ impl<D: Dimension> ShrinkAction<D> {
                 if next.index() < ndim {
                     Some(ShrinkAction::RemoveBorders(next))
                 } else {
-                    Some(ShrinkAction::PartiallySortAxes)
+                    Some(ShrinkAction::SortAxes)
                 }
             }
-            &ShrinkAction::PartiallySortAxes => Some(ShrinkAction::PartiallySortAxes),
+            &ShrinkAction::SortAxes => Some(ShrinkAction::SortAxes),
             &ShrinkAction::ShrinkElement(ref index) => {
                 // FIXME: `next_for` is an undocumented method from `ndarray`.
                 Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
@@ -147,10 +147,10 @@ impl<D: Dimension> ShrinkAction<D> {
     //             if next.index() < ndim {
     //                 Some(ShrinkAction::RemoveBorders(next))
     //             } else {
-    //                 Some(ShrinkAction::PartiallySortAxes)
+    //                 Some(ShrinkAction::SortAxes)
     //             }
     //         }
-    //         &Some(ShrinkAction::PartiallySortAxes) => Some(ShrinkAction::PartiallySortAxes),
+    //         &Some(ShrinkAction::SortAxes) => Some(ShrinkAction::SortAxes),
     //         &Some(ShrinkAction::ShrinkElement(ref index)) => {
     //             // FIXME: `next_for` is an undocumented method from `ndarray`.
     //             Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
@@ -212,17 +212,15 @@ impl<D: Dimension> LayoutTree<D> {
     }
 
     /// Given the underlying array of elements, removes the borders and applies
-    /// the steps and axis inversions such that the resulting array matches the
-    /// layout specified by `self` (ignoring `iter_order`).
+    /// the steps such that the resulting array matches the layout specified by
+    /// `self` (ignoring `iter_order` and `invert`).
     ///
-    /// If you want the resulting array to have an `iter_order` matching
-    /// `self`, `arr` should have that `iter_order`.
-    pub fn apply_borders_steps_invert<S: Data>(&self, arr: &mut ArrayBase<S, D>) {
+    /// If you want the resulting array to have a memory layout matching
+    /// `self.iter_order` and `self.invert`, `arr` should have that
+    /// `iter_order`.
+    pub fn apply_borders_steps<S: Data>(&self, arr: &mut ArrayBase<S, D>) {
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
-            if self.inverted.read(axis) {
-                arr.invert_axis(axis);
-            }
             arr.slice_axis_inplace(
                 axis,
                 Slice::new(
@@ -235,67 +233,46 @@ impl<D: Dimension> LayoutTree<D> {
     }
 }
 
-/// Computes an array of values by applying mapping.
-///
-/// The resulting array will have the layout described by `desired_layout` and
-/// contain the values computed applying `mapping` to
-/// `all_elems.apply_borders_steps_invert(&mut all_elems)`.
-fn compute_values_layout<A, B, D, F>(
-    all_elems: ArrayView<'_, A, D>,
-    base_layout: &LayoutTree<D>,
-    desired_layout: &LayoutTree<D>,
+/// Applies `mapping` to `orig`, returning an array with memory layout matching
+/// `inverted` and `iter_order`.
+fn map_with_memory_order<A, B, D, F>(
+    orig: ArrayView<'_, A, D>,
+    inverted: &AxesMask<D, IxDyn>,
+    iter_order: &AxesFor<D, D>,
     mapping: F,
 ) -> Array<B, D>
 where
     D: Dimension,
     F: FnMut(&A) -> B,
 {
-    let ndim = all_elems.ndim();
-    debug_assert_eq!(ndim, base_layout.ndim());
-    debug_assert_eq!(ndim, desired_layout.ndim());
+    let ndim = orig.ndim();
+    debug_assert_eq!(ndim, inverted.for_ndim());
+    debug_assert_eq!(ndim, iter_order.for_ndim());
+    let shape = orig.raw_dim();
+    let mut orig_permuted = orig.permuted_axes(iter_order.clone().into_inner());
+    inverted.indexed_visitv(|axis, inv| {
+        if inv {
+            orig_permuted.invert_axis(axis)
+        }
+    });
 
-    // Compute `elems_with_borders` such that
-    // `base_layout.apply_borders_steps_invert(&mut all_elems)` would contain
-    // the same elements as `desired_layout.apply_borders_steps_invert(&mut
-    // elems_with_borders)`.
-    let mut elems_with_borders = all_elems;
-    for ax in 0..ndim {
-        let axis = Axis(ax);
-        let start = (base_layout.lower_borders[ax] - desired_layout.lower_borders[ax]) as isize;
-        let end = -((base_layout.upper_borders[ax] - desired_layout.upper_borders[ax]) as isize);
-        let step = (base_layout.steps[ax] / desired_layout.steps[ax]) as isize;
-        elems_with_borders.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        if desired_layout.inverted.read(axis) != base_layout.inverted.read(axis) {
-            elems_with_borders.invert_axis(axis);
+    let new_flat: Vec<B> = orig_permuted.iter().map(mapping).collect();
+    let mut new_strides = D::zeros(ndim);
+    if !orig_permuted.is_empty() {
+        let mut cum_prod: isize = 1;
+        for &ax in iter_order.slice().iter().rev() {
+            let len = shape[ax];
+            new_strides[ax] = cum_prod as usize;
+            cum_prod *= len as isize;
         }
     }
-
-    // Get an array of the current values with the correct axis order.
-    let values_with_borders = {
-        let shape_with_borders = elems_with_borders.raw_dim();
-        let elems_with_borders =
-            elems_with_borders.permuted_axes(desired_layout.iter_order.clone().into_inner());
-        let values_flat: Vec<B> = elems_with_borders.iter().map(mapping).collect();
-        let mut strides_with_borders = D::zeros(ndim);
-        if !elems_with_borders.is_empty() {
-            let mut cum_prod: isize = 1;
-            for &ax in desired_layout.iter_order.slice().iter().rev() {
-                let len = shape_with_borders[ax];
-                strides_with_borders[ax] = cum_prod as usize;
-                cum_prod *= len as isize;
-            }
+    let mut new = Array::from_shape_vec(shape.strides(new_strides), new_flat).unwrap();
+    inverted.indexed_visitv(|axis, inv| {
+        if inv {
+            new.invert_axis(axis)
         }
-        Array::from_shape_vec(
-            shape_with_borders.strides(strides_with_borders),
-            values_flat,
-        )
-        .unwrap()
-    };
-
-    // Apply the axis inversions and slicing.
-    let mut values = values_with_borders;
-    desired_layout.apply_borders_steps_invert(&mut values);
-    values
+    });
+    new
 }
 
 // struct AxesPermutation<D: Dimension>(AxesFor<D, D>);
@@ -325,12 +302,56 @@ where
 //     }
 // }
 
+/// ```text
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+/// ▓▓▓ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░▓▓▓▓
+/// ▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░▓▓▓▓
+/// ▓▓▓ ░░ ░░ ▒▒▒▒▒▒▒▒▒▒▒▒▒░ ░░ ░▓▓▓▓
+/// ▓▓▓░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░▓▓▓▓
+/// ▓▓▓ ░░ ░░ ▒▒ ░░ ░░ ░▒▒▒░ ░░ ░▓▓▓▓
+/// ▓▓▓░░░░░░░▒▒░░░░░░░░▒▒▒░░░░░░▓▓▓▓
+/// ▓▓▓ ░░ ░░ ▒▒ ░░ ░░ ░▒▒▒░ ░░ ░▓▓▓▓
+/// ▓▓▓░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░▓▓▓▓
+/// ▓▓▓ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░▓▓▓▓
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+///
+/// Key:
+///
+/// ▓ Border of `base_layout`.
+/// ▒ Border of `current_layout`.
+/// ░ Elements between steps.
+/// ```
+struct SlicedArrayBase<S: Data, D: Dimension> {
+    all_elems: ArrayBase<S, D>,
+    /// Lower borders to cut off when slicing.
+    lower_borders: D,
+    /// Upper borders to cut off when slicing.
+    upper_borders: D,
+    /// Positive steps for use in slicing.
+    steps: D,
+}
+
+struct CurrentSlice<D: Dimension> {
+    first_index: D,
+    reduce_lower_borders: D,
+    reduce_upper_borders: D,
+    remove_steps: AxesMask<D, IxDyn>,
+}
+
+
+
 /// `ValueTree` corresponding to `ArrayStrategy`.
 #[derive(Clone, Debug)]
 pub struct ArrayValueTree<A, D: Dimension> {
     /// All elements that may be used to produce the values in the underlying
     /// representation of `.current()`.
-    all_elements: Array<A, D>,
+    ///
+    /// This contains all the elements in the underlying representation of an
+    /// array with layout `base_layout`.
+    all_base_trees: Array<A, D>,
     /// The layout of `.current()` from when the `ArrayValueTree` was initially
     /// constructed (before any simplification).
     base_layout: LayoutTree<D>,
@@ -347,7 +368,7 @@ impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
     /// Returns the number of dimensions of arrays produced by
     /// `self.current()`.
     pub fn ndim(&self) -> usize {
-        let ndim = self.all_elements.ndim();
+        let ndim = self.all_base_trees.ndim();
         debug_assert_eq!(ndim, self.base_layout.ndim());
         debug_assert_eq!(ndim, self.current_layout.ndim());
         // TODO: more debug assert
@@ -358,15 +379,63 @@ impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
     pub fn shape(&self) -> D {
         // TODO: Update this after adding support for shrinking the size of the array.
         self.base_layout
-            .shape_after_apply(self.all_elements.raw_dim())
+            .shape_after_apply(self.all_base_trees.raw_dim())
     }
 
-    /// Returns a mutable array view of value trees corresponding to
-    /// `.current()`.
-    pub fn sliced_elements(&mut self) -> ArrayViewMut<'_, A, D> {
-        let mut v = self.all_elements.view_mut();
-        self.current_layout.apply_borders_steps_invert(&mut v);
-        v
+    /// Returns a mutable array view of value trees corresponding to the
+    /// visible portion of `.current()`.
+    pub fn current_trees_mut(&mut self) -> ArrayViewMut<'_, A, D> {
+        let mut current_trees = self.all_current_trees_mut();
+        self.current_layout.apply_borders_steps(&mut current_trees);
+        current_trees
+    }
+
+    /// Returns a view of all the trees used to produce the underlying
+    /// representation of `.current()`.
+    ///
+    /// Note that the memory layout of the view may not be the same as the
+    /// memory layout of the underlying representation of `.current()`.
+    pub fn all_current_trees<'a>(&'a self) -> ArrayView<'a, A, D> {
+        let ndim = self.ndim();
+        // Compute `elems` such that
+        // `base_layout.apply_borders_steps_invert(&mut all_elems)` would contain
+        // the same elements as `desired_layout.apply_borders_steps_invert(&mut
+        // elems)`.
+        let mut elems = self.all_base_trees.view();
+        for ax in 0..ndim {
+            let axis = Axis(ax);
+            let start = (self.base_layout.lower_borders[ax] - self.current_layout.lower_borders[ax])
+                as isize;
+            let end = -((self.base_layout.upper_borders[ax] - self.current_layout.upper_borders[ax])
+                as isize);
+            let step = (self.base_layout.steps[ax] / self.current_layout.steps[ax]) as isize;
+            elems.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        elems
+    }
+
+    /// Returns a view of all the trees used to produce the underlying
+    /// representation of `.current()`.
+    ///
+    /// Note that the memory layout of the view may not be the same as the
+    /// memory layout of the underlying representation of `.current()`.
+    pub fn all_current_trees_mut<'a>(&'a mut self) -> ArrayViewMut<'a, A, D> {
+        let ndim = self.ndim();
+        // Compute `elems` such that
+        // `base_layout.apply_borders_steps_invert(&mut all_elems)` would contain
+        // the same elements as `desired_layout.apply_borders_steps_invert(&mut
+        // elems)`.
+        let mut elems = self.all_base_trees.view_mut();
+        for ax in 0..ndim {
+            let axis = Axis(ax);
+            let start = (self.base_layout.lower_borders[ax] - self.current_layout.lower_borders[ax])
+                as isize;
+            let end = -((self.base_layout.upper_borders[ax] - self.current_layout.upper_borders[ax])
+                as isize);
+            let step = (self.base_layout.steps[ax] / self.current_layout.steps[ax]) as isize;
+            elems.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        elems
     }
 }
 
@@ -374,12 +443,16 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     type Value = Array<A::Value, D>;
 
     fn current(&self) -> Array<A::Value, D> {
-        compute_values_layout(
-            self.all_elements.view(),
-            &self.base_layout,
-            &self.current_layout,
+        let all_current_trees = self.all_current_trees();
+        let all_current_values = map_with_memory_order(
+            all_current_trees,
+            &self.current_layout.inverted,
+            &self.current_layout.iter_order,
             |elem| elem.current(),
-        )
+        );
+        let mut current_values = all_current_values;
+        self.current_layout.apply_borders_steps(&mut current_values);
+        current_values
     }
 
     fn simplify(&mut self) -> bool {
@@ -396,9 +469,11 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
                     self.current_layout.lower_borders[axis.index()] = 0;
                     self.current_layout.upper_borders[axis.index()] = 0;
                 }
-                ShrinkAction::PartiallySortAxes => unimplemented!(),
+                ShrinkAction::SortAxes => {
+                    self.current_layout.iter_order = axes_all().into_axes_for(self.ndim());
+                }
                 ShrinkAction::ShrinkElement(index) => {
-                    self.sliced_elements()[index.clone()].simplify();
+                    self.all_current_trees_mut()[index.clone()].simplify();
                 }
             }
             self.last_action = Some(action);
@@ -425,9 +500,11 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
                     self.current_layout.upper_borders[axis.index()] =
                         self.base_layout.upper_borders[axis.index()];
                 }
-                ShrinkAction::PartiallySortAxes => unimplemented!(),
+                ShrinkAction::SortAxes => {
+                    self.current_layout.iter_order = self.base_layout.iter_order.clone();
+                }
                 ShrinkAction::ShrinkElement(index) => {
-                    if self.sliced_elements()[index.clone()].complicate() {
+                    if self.all_current_trees_mut()[index.clone()].complicate() {
                         // `.complicate()` only attempts to *partially* undo the last
                         // simplification, so it may be possible to complicate this element further.
                         self.last_action = Some(ShrinkAction::ShrinkElement(index));
@@ -453,7 +530,7 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
 //                     + self.base_layout.upper_borders[axis.index()]
 //             }
 //         });
-// let mut elements_with_borders = all_elements;
+// let mut elements_with_borders = all_base_trees;
 // self.layout_state
 //     .remove_borders
 //     .indexed_visitv(|axis, remove| {
