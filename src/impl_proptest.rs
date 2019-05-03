@@ -1,7 +1,8 @@
-use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor};
+use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor, SubDim};
 use itertools::{izip, Itertools};
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, ShapeBuilder, Slice,
+    ViewRepr,
 };
 use num_traits::ToPrimitive;
 use proptest::strategy::{Strategy, ValueTree};
@@ -235,15 +236,15 @@ impl<D: Dimension> LayoutTree<D> {
 
 /// Applies `mapping` to `orig`, returning an array with memory layout matching
 /// `inverted` and `iter_order`.
-fn map_with_memory_order<A, B, D, F>(
-    orig: ArrayView<'_, A, D>,
+fn map_with_memory_order<'a, A, B, D, F>(
+    orig: ArrayView<'a, A, D>,
     inverted: &AxesMask<D, IxDyn>,
     iter_order: &AxesFor<D, D>,
     mapping: F,
 ) -> Array<B, D>
 where
     D: Dimension,
-    F: FnMut(&A) -> B,
+    F: FnMut(&'a A) -> B,
 {
     let ndim = orig.ndim();
     debug_assert_eq!(ndim, inverted.for_ndim());
@@ -302,6 +303,241 @@ where
 //     }
 // }
 
+// struct foo {
+//     chunk_index: D,
+//     step_bw_chunks: D,
+//     chunk_visible_shape: D,
+// }
+
+struct ChunkInfo<S: Data, D: Dimension> {
+    /// Array of all the trees that could be included in the underlying
+    /// representation of chunks.
+    ///
+    /// The memory layout of this array doesn't matter.
+    all_trees: ArrayBase<S, D>,
+
+    first_visible_index: D,
+    visible_shape: D,
+
+    base_lower_borders: D,
+    base_upper_borders: D,
+    base_steps: D,
+    remove_borders_steps: AxesMask<D, IxDyn>,
+
+    base_invert: AxesMask<D, IxDyn>,
+    allow_invert: AxesMask<D, IxDyn>,
+
+    base_axis_order: AxesFor<D, D>,
+    sort_axes: bool,
+}
+
+impl<A, S, D> ChunkInfo<S, D>
+where
+    S: Data<Elem = A>,
+    D: Dimension,
+{
+    pub fn ndim(&self) -> usize {
+        // TODO: debug assert?
+        self.all_trees.ndim()
+    }
+
+    // ///
+    // pub fn lower_border(&self, axis: Axis) -> usize {
+    //     if self.remove_borders_steps.read(axis) {
+    //         0
+    //     } else {
+    //         self.base_lower_borders[axis.index()]
+    //     }
+    // }
+
+    /// Returns a view of all the trees that could be included in the
+    /// underlying representation of chunks.
+    pub fn view_all(&self) -> ArrayView<'_, A, D> {
+        self.all_trees.view()
+    }
+
+    /// Returns a view of the visible portion of the current chunk.
+    pub fn view_current(&self) -> ArrayView<'_, A, D> {
+        let mut view = self.all_trees.view();
+        for ax in 0..self.ndim() {
+            let axis = Axis(ax);
+            let start = self.first_visible_index[ax] as isize;
+            let step = self.base_steps[ax] as isize;
+            let end = start + step * self.visible_shape[ax] as isize;
+            view.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        view
+    }
+
+    /// Returns a view of the underlying representation of an owned copy of the
+    /// current chunk.
+    pub fn view_all_current(&self) -> ArrayView<'_, A, D> {
+        let mut view = self.all_trees.view();
+        for ax in 0..self.ndim() {
+            let axis = Axis(ax);
+            let (start, end, step) = if self.remove_borders_steps.read(axis) {
+                let start = self.first_visible_index[ax];
+                let step = self.base_steps[ax];
+                let end = start + step * self.visible_shape[ax];
+                (start as isize, end as isize, step as isize)
+            } else {
+                let start = self.first_visible_index[ax] - self.base_lower_borders[ax];
+                let step = 1;
+                let end = start + step * self.visible_shape[ax] + self.base_upper_borders[ax];
+                (start as isize, end as isize, step as isize)
+            };
+            view.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        view
+    }
+
+    /// Applies the mapping to the underlying representation of the current
+    /// chunk, returning an array sliced to show only the visible portion.
+    pub fn map_current<'a, F, B>(&'a self, mapping: F) -> Array<B, D>
+    where
+        A: 'a,
+        F: FnMut(&'a A) -> B,
+    {
+        let mut current = self.map_all_current(mapping);
+        for ax in 0..self.ndim() {
+            let axis = Axis(ax);
+            if !self.remove_borders_steps.read(axis) {
+                current.slice_axis_inplace(
+                    axis,
+                    Slice {
+                        start: self.base_lower_borders[ax] as isize,
+                        end: Some(-(self.base_upper_borders[ax] as isize)),
+                        step: self.base_steps[ax] as isize,
+                    },
+                );
+            }
+        }
+        current
+    }
+
+    /// Applies the mapping to the underlying representation of the current
+    /// chunk, returning the underlying representation.
+    pub fn map_all_current<'a, F, B>(&'a self, mapping: F) -> Array<B, D>
+    where
+        A: 'a,
+        F: FnMut(&'a A) -> B,
+    {
+        let current_inverted = (&self.allow_invert) & (&self.base_invert);
+        map_with_memory_order(
+            self.view_all_current(),
+            &current_inverted,
+            &if self.sort_axes {
+                axes_all().into_axes_for(self.ndim())
+            } else {
+                self.base_axis_order
+            },
+            mapping,
+        )
+    }
+
+    /// Removes the borders and steps from the owned representation of the
+    /// current chunk.
+    pub fn remove_borders_steps(&mut self, axis: Axis) {
+        self.remove_borders_steps.write(axis, true);
+    }
+
+    /// Restores the borders and steps to the owned representation of the
+    /// current chunk.
+    pub fn restore_borders_steps(&mut self, axis: Axis) {
+        self.remove_borders_steps.write(axis, false);
+    }
+
+    /// Forbids the given axis from having a negative stride in the owned
+    /// representation of the current chunk.
+    pub fn forbid_invert(&mut self, axis: Axis) {
+        self.allow_invert.write(axis, false);
+    }
+
+    /// Allows the given axis to have a negative stride in the owned
+    /// representation of the current chunk.
+    pub fn allow_invert(&mut self, axis: Axis) {
+        self.allow_invert.write(axis, true);
+    }
+
+    /// Forces the axes to be in order (ignoring inversions) in the owned
+    /// representation of the current chunk.
+    pub fn sort_axes(&mut self) {
+        self.sort_axes = true;
+    }
+
+    /// Allows the axes to be out-of-order in the owned representation of the
+    /// current chunk.
+    pub fn unsort_axes(&mut self) {
+        self.sort_axes = false;
+    }
+
+    pub fn first_subchunk_index(&self) -> Option<D> {
+        let can_subdivide = self.visible_shape.foldv(false, |acc, len| acc & (len >= 2));
+        if can_subdivide {
+            Some(D::zeros(self.ndim()))
+        } else {
+            None
+        }
+    }
+
+    pub fn next_subchunk_index(&self, mut index: D) -> Option<D> {
+        let ndim = self.ndim();
+        assert_eq!(index.ndim(), ndim);
+        for ax in (0..ndim).rev() {
+            if self.visible_shape[ax] >= 2 {
+                index[ax] += 1;
+                if index[ax] < 2 {
+                    return Some(index);
+                } else {
+                    index[ax] = 0;
+                }
+            } else {
+                assert_eq!(index[ax], 0);
+            }
+        }
+        None
+    }
+
+    pub fn get_subchunk(&self, index: D) -> ChunkInfo<ViewRepr<&'_ A>, D> {
+        // TODO: this is unnecessarily expensive.
+        let mut chunk = ChunkInfo {
+            all_trees: self.all_trees.view(),
+
+            first_visible_index: self.first_visible_index.clone(),
+            visible_shape: self.visible_shape.clone(),
+
+            base_lower_borders: self.base_lower_borders.clone(),
+            base_upper_borders: self.base_upper_borders.clone(),
+            base_steps: self.base_steps.clone(),
+            remove_borders_steps: self.remove_borders_steps.clone(),
+
+            base_invert: self.base_invert.clone(),
+            allow_invert: self.allow_invert.clone(),
+
+            base_axis_order: self.base_axis_order.clone(),
+            sort_axes: self.sort_axes.clone(),
+        };
+        chunk.narrow_to_subchunk(index);
+        chunk
+    }
+
+    pub fn narrow_to_subchunk(&mut self, index: D) {
+        let ndim = self.ndim();
+        assert_eq!(index.ndim(), ndim);
+        self.first_visible_index
+            .indexed_map_inplace(|axis, vis_ind| {
+                let ax = axis.index();
+                *vis_ind += match index[ax] {
+                    0 => 0,
+                    1 => self.visible_shape[ax] / 2,
+                    _ => panic!("Index out of bounds for axis {}", ax),
+                };
+            });
+        self.visible_shape
+            .map_inplace(|len| *len = *len / 2 + (*len % 2 != 0) as usize);
+    }
+}
+
 /// ```text
 /// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 /// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
@@ -334,14 +570,90 @@ struct SlicedArrayBase<S: Data, D: Dimension> {
     steps: D,
 }
 
-struct CurrentSlice<D: Dimension> {
-    first_index: D,
-    reduce_lower_borders: D,
-    reduce_upper_borders: D,
-    remove_steps: AxesMask<D, IxDyn>,
+impl<A, S, D> SlicedArrayBase<S, D>
+where
+    S: Data<Elem = A>,
+    D: Dimension,
+{
+    pub fn ndim(&self) -> usize {
+        let ndim = self.all_elems.ndim();
+        debug_assert_eq!(ndim, self.lower_borders.ndim());
+        debug_assert_eq!(ndim, self.upper_borders.ndim());
+        debug_assert_eq!(ndim, self.steps.ndim());
+        ndim
+    }
+
+    pub fn view(&self) -> ArrayView<'_, A, D> {
+        let mut v = self.all_elems.view();
+        for ax in 0..self.ndim() {
+            let axis = Axis(ax);
+            let start = self.lower_borders[ax] as isize;
+            let end = -(self.upper_borders[ax] as isize);
+            let step = self.steps[ax] as isize;
+            v.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        v
+    }
+
+    pub fn view_all(&self) -> ArrayView<'_, A, D> {
+        self.all_elems.view()
+    }
 }
 
+struct CurrentSliceInfo<D: Dimension> {
+    /// Index within `all_elems` of the first visible element of the current slice.
+    first_index: D,
+    /// Shape of the visible portion of the current slice.
+    shape: D,
+    /// Lower borders in owned representation.
+    lower_borders: D,
+    /// Upper borders in owned representation.
+    upper_borders: D,
+    /// Whether to keep steps in owned representation.
+    keep_steps: AxesMask<D, IxDyn>,
+}
 
+impl<D: Dimension> CurrentSliceInfo<D> {
+    pub fn ndim(&self) -> usize {
+        let ndim = self.first_index.ndim();
+        debug_assert_eq!(ndim, self.lower_borders.ndim());
+        debug_assert_eq!(ndim, self.upper_borders.ndim());
+        debug_assert_eq!(ndim, self.keep_steps.for_ndim());
+        ndim
+    }
+
+    pub fn view<'a, S: Data>(&self, base: &'a SlicedArrayBase<S, D>) -> ArrayView<'a, S::Elem, D> {
+        let ndim = self.ndim();
+        assert_eq!(ndim, base.ndim());
+        let mut v = base.view_all();
+        for ax in 0..ndim {
+            let axis = Axis(ax);
+            let start = self.first_index[ax] as isize;
+            let end = start + self.shape[ax] as isize; // * step
+            let step = base.steps[ax] as isize;
+            v.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+        }
+        v
+    }
+
+    pub fn map_with_memory_order<S, B, F>(
+        &self,
+        base: &SlicedArrayBase<S, D>,
+        mem_order: &MemoryOrder<D>,
+        mapping: F,
+    ) -> Array<B, D>
+    where
+        S: Data,
+        F: FnMut(&S::Elem) -> B,
+    {
+        unimplemented!()
+    }
+}
+
+struct MemoryOrder<D: Dimension> {
+    inverted: AxesMask<D, IxDyn>,
+    iter_order: AxesFor<D, D>,
+}
 
 /// `ValueTree` corresponding to `ArrayStrategy`.
 #[derive(Clone, Debug)]
