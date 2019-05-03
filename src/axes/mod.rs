@@ -180,6 +180,78 @@ where
     }
 }
 
+impl<'b, D, X1, X2> std::ops::BitAnd<&'b AxesMask<D, X2>> for AxesMask<D, X1>
+where
+    D: Dimension,
+    X1: Dimension,
+    X2: Dimension,
+{
+    type Output = AxesMask<D, IxDyn>;
+
+    fn bitand(self, rhs: &'b AxesMask<D, X2>) -> AxesMask<D, IxDyn> {
+        let for_ndim = self.for_ndim();
+        assert_eq!(rhs.for_ndim(), for_ndim);
+        let mut out = self.into_dyn_num_true();
+        for ax in 0..for_ndim {
+            let axis = Axis(ax);
+            out.write(axis, out.read(axis) & rhs.read(axis));
+        }
+        out
+    }
+}
+
+impl<'a, 'b, D, X1, X2> std::ops::BitAnd<&'b AxesMask<D, X2>> for &'a AxesMask<D, X1>
+where
+    D: Dimension,
+    X1: Dimension,
+    X2: Dimension,
+{
+    type Output = AxesMask<D, IxDyn>;
+
+    fn bitand(self, rhs: &'b AxesMask<D, X2>) -> AxesMask<D, IxDyn> {
+        let for_ndim = self.for_ndim();
+        assert_eq!(rhs.for_ndim(), for_ndim);
+        let mut out = AxesMask::all_false(for_ndim).into_dyn_num_true();
+        for ax in 0..for_ndim {
+            let axis = Axis(ax);
+            out.write(axis, self.read(axis) & rhs.read(axis));
+        }
+        out
+    }
+}
+
+impl<D, X> std::ops::Not for AxesMask<D, X>
+where
+    D: Dimension + SubDim<X>,
+    X: Dimension,
+{
+    type Output = AxesMask<D, D::Out>;
+
+    fn not(self) -> Self::Output {
+        let AxesMask { mut mask, .. } = self;
+        mask.map_inplace(|m| *m = (*m == 0) as usize);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
+    }
+}
+
+impl<'a, D, X> std::ops::Not for &'a AxesMask<D, X>
+where
+    D: Dimension + SubDim<X>,
+    X: Dimension,
+{
+    type Output = AxesMask<D, D::Out>;
+
+    fn not(self) -> Self::Output {
+        AxesMask {
+            mask: self.mask.mapv(|m| (m == 0) as usize),
+            num_true: PhantomData,
+        }
+    }
+}
+
 /// A list of unique axes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Axes<X: Dimension>(X);
