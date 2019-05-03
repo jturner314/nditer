@@ -1,8 +1,8 @@
 use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor, SubDim};
 use itertools::{izip, Itertools};
 use ndarray::{
-    Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, ShapeBuilder, Slice,
-    ViewRepr,
+    Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, OwnedRepr,
+    ShapeBuilder, Slice, ViewRepr,
 };
 use num_traits::ToPrimitive;
 use proptest::strategy::{Strategy, ValueTree};
@@ -69,104 +69,6 @@ where
     shape[ndim - 1] = remaining_size;
 
     shape
-}
-
-/// A shrink action for an `ArrayValueTree`.
-#[derive(Clone, Debug)]
-enum ShrinkAction<D: Dimension> {
-    UninvertAxis(Axis),
-    RemoveStep(Axis),
-    RemoveBorders(Axis),
-    SortAxes, // FIXME
-    // BisectProportional,
-    // BisectAxis(Axis),
-    /// Shrink the element at the given index in the current array.
-    ///
-    /// Note that the index is for `.all_current_trees()`, not `all_base_trees`.
-    ShrinkElement(D),
-}
-
-impl<D: Dimension> ShrinkAction<D> {
-    /// Returns the next shrink action for an array of the given shape.
-    pub fn next(&self, shape: &D) -> Option<ShrinkAction<D>> {
-        let ndim = shape.ndim();
-        match self {
-            &ShrinkAction::UninvertAxis(axis) => {
-                let next = Axis(axis.index() + 1);
-                if next.index() < ndim {
-                    Some(ShrinkAction::UninvertAxis(next))
-                } else {
-                    Some(ShrinkAction::RemoveStep(Axis(0)))
-                }
-            }
-            &ShrinkAction::RemoveStep(axis) => {
-                let next = Axis(axis.index() + 1);
-                if next.index() < ndim {
-                    Some(ShrinkAction::RemoveStep(next))
-                } else {
-                    Some(ShrinkAction::RemoveBorders(Axis(0)))
-                }
-            }
-            &ShrinkAction::RemoveBorders(axis) => {
-                let next = Axis(axis.index() + 1);
-                if next.index() < ndim {
-                    Some(ShrinkAction::RemoveBorders(next))
-                } else {
-                    Some(ShrinkAction::SortAxes)
-                }
-            }
-            &ShrinkAction::SortAxes => Some(ShrinkAction::SortAxes),
-            &ShrinkAction::ShrinkElement(ref index) => {
-                // FIXME: `next_for` is an undocumented method from `ndarray`.
-                Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
-            }
-        }
-    }
-
-    // /// Returns the previous shrink action for an array of the given shape.
-    // pub fn prev(action: &Option<ShrinkAction<D>>, shape: &D) -> Option<ShrinkAction<D>> {
-    //     let ndim = shape.ndim();
-    //     match action {
-    //         &Some(ShrinkAction::UninvertAxis(axis)) => {
-    //             let next = Axis(axis.index() + 1);
-    //             if next.index() < ndim {
-    //                 Some(ShrinkAction::UninvertAxis(next))
-    //             } else {
-    //                 Some(ShrinkAction::RemoveStep(Axis(0)))
-    //             }
-    //         }
-    //         &Some(ShrinkAction::RemoveStep(axis)) => {
-    //             let next = Axis(axis.index() + 1);
-    //             if next.index() < ndim {
-    //                 Some(ShrinkAction::RemoveStep(next))
-    //             } else {
-    //                 Some(ShrinkAction::RemoveBorders(Axis(0)))
-    //             }
-    //         }
-    //         &Some(ShrinkAction::RemoveBorders(axis)) => {
-    //             let next = Axis(axis.index() + 1);
-    //             if next.index() < ndim {
-    //                 Some(ShrinkAction::RemoveBorders(next))
-    //             } else {
-    //                 Some(ShrinkAction::SortAxes)
-    //             }
-    //         }
-    //         &Some(ShrinkAction::SortAxes) => Some(ShrinkAction::SortAxes),
-    //         &Some(ShrinkAction::ShrinkElement(ref index)) => {
-    //             // FIXME: `next_for` is an undocumented method from `ndarray`.
-    //             Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
-    //         }
-    //         &None => {
-    //             // The previous action is to shrink the last element of the
-    //             // array, if one exists.
-    //             if shape.size() == 0 {
-    //                 None
-    //             } else {
-    //                 Some(ShrinkAction::ShrinkElement(shape.mapv(|len| len - 1)))
-    //             }
-    //         }
-    //     }
-    // }
 }
 
 #[derive(Clone, Debug)]
@@ -309,6 +211,7 @@ where
 //     chunk_visible_shape: D,
 // }
 
+#[derive(Clone, Debug)]
 struct ChunkInfo<S: Data, D: Dimension> {
     /// Array of all the trees that could be included in the underlying
     /// representation of chunks.
@@ -339,6 +242,10 @@ where
     pub fn ndim(&self) -> usize {
         // TODO: debug assert?
         self.all_trees.ndim()
+    }
+
+    pub fn shape(&self) -> D {
+        self.visible_shape.clone()
     }
 
     // ///
@@ -435,15 +342,15 @@ where
         )
     }
 
-    /// Removes the borders and steps from the owned representation of the
+    /// Removes the borders and step for the owned representation of the
     /// current chunk.
-    pub fn remove_borders_steps(&mut self, axis: Axis) {
+    pub fn remove_borders_step(&mut self, axis: Axis) {
         self.remove_borders_steps.write(axis, true);
     }
 
-    /// Restores the borders and steps to the owned representation of the
+    /// Restores the borders and step for the owned representation of the
     /// current chunk.
-    pub fn restore_borders_steps(&mut self, axis: Axis) {
+    pub fn restore_borders_step(&mut self, axis: Axis) {
         self.remove_borders_steps.write(axis, false);
     }
 
@@ -538,137 +445,55 @@ where
     }
 }
 
-/// ```text
-/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-/// ▓▓▓ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░▓▓▓▓
-/// ▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░▓▓▓▓
-/// ▓▓▓ ░░ ░░ ▒▒▒▒▒▒▒▒▒▒▒▒▒░ ░░ ░▓▓▓▓
-/// ▓▓▓░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░▓▓▓▓
-/// ▓▓▓ ░░ ░░ ▒▒ ░░ ░░ ░▒▒▒░ ░░ ░▓▓▓▓
-/// ▓▓▓░░░░░░░▒▒░░░░░░░░▒▒▒░░░░░░▓▓▓▓
-/// ▓▓▓ ░░ ░░ ▒▒ ░░ ░░ ░▒▒▒░ ░░ ░▓▓▓▓
-/// ▓▓▓░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░▓▓▓▓
-/// ▓▓▓ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░▓▓▓▓
-/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-///
-/// Key:
-///
-/// ▓ Border of `base_layout`.
-/// ▒ Border of `current_layout`.
-/// ░ Elements between steps.
-/// ```
-struct SlicedArrayBase<S: Data, D: Dimension> {
-    all_elems: ArrayBase<S, D>,
-    /// Lower borders to cut off when slicing.
-    lower_borders: D,
-    /// Upper borders to cut off when slicing.
-    upper_borders: D,
-    /// Positive steps for use in slicing.
-    steps: D,
+/// A shrink action for an `ArrayValueTree`.
+#[derive(Clone, Debug)]
+enum ShrinkAction<D: Dimension> {
+    RemoveBordersStep(Axis),
+    ForbidInvertAxis(Axis),
+    SortAxes,
+    SelectSubchunk(Option<D>),
+    /// Shrink the element at the given index in the current array.
+    ///
+    /// Note that the index is for `.all_current_trees()`, not `all_base_trees`.
+    ShrinkElement(Option<D>),
 }
 
-impl<A, S, D> SlicedArrayBase<S, D>
-where
-    S: Data<Elem = A>,
-    D: Dimension,
-{
-    pub fn ndim(&self) -> usize {
-        let ndim = self.all_elems.ndim();
-        debug_assert_eq!(ndim, self.lower_borders.ndim());
-        debug_assert_eq!(ndim, self.upper_borders.ndim());
-        debug_assert_eq!(ndim, self.steps.ndim());
-        ndim
-    }
-
-    pub fn view(&self) -> ArrayView<'_, A, D> {
-        let mut v = self.all_elems.view();
-        for ax in 0..self.ndim() {
-            let axis = Axis(ax);
-            let start = self.lower_borders[ax] as isize;
-            let end = -(self.upper_borders[ax] as isize);
-            let step = self.steps[ax] as isize;
-            v.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-        v
-    }
-
-    pub fn view_all(&self) -> ArrayView<'_, A, D> {
-        self.all_elems.view()
-    }
-}
-
-struct CurrentSliceInfo<D: Dimension> {
-    /// Index within `all_elems` of the first visible element of the current slice.
-    first_index: D,
-    /// Shape of the visible portion of the current slice.
-    shape: D,
-    /// Lower borders in owned representation.
-    lower_borders: D,
-    /// Upper borders in owned representation.
-    upper_borders: D,
-    /// Whether to keep steps in owned representation.
-    keep_steps: AxesMask<D, IxDyn>,
-}
-
-impl<D: Dimension> CurrentSliceInfo<D> {
-    pub fn ndim(&self) -> usize {
-        let ndim = self.first_index.ndim();
-        debug_assert_eq!(ndim, self.lower_borders.ndim());
-        debug_assert_eq!(ndim, self.upper_borders.ndim());
-        debug_assert_eq!(ndim, self.keep_steps.for_ndim());
-        ndim
-    }
-
-    pub fn view<'a, S: Data>(&self, base: &'a SlicedArrayBase<S, D>) -> ArrayView<'a, S::Elem, D> {
-        let ndim = self.ndim();
-        assert_eq!(ndim, base.ndim());
-        let mut v = base.view_all();
-        for ax in 0..ndim {
-            let axis = Axis(ax);
-            let start = self.first_index[ax] as isize;
-            let end = start + self.shape[ax] as isize; // * step
-            let step = base.steps[ax] as isize;
-            v.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-        v
-    }
-
-    pub fn map_with_memory_order<S, B, F>(
-        &self,
-        base: &SlicedArrayBase<S, D>,
-        mem_order: &MemoryOrder<D>,
-        mapping: F,
-    ) -> Array<B, D>
-    where
-        S: Data,
-        F: FnMut(&S::Elem) -> B,
-    {
-        unimplemented!()
-    }
-}
-
-struct MemoryOrder<D: Dimension> {
-    inverted: AxesMask<D, IxDyn>,
-    iter_order: AxesFor<D, D>,
-}
+// impl<D: Dimension> ShrinkAction<D> {
+//     /// Returns the next shrink action for an array of the given shape.
+//     pub fn next(&self, shape: &D) -> Option<ShrinkAction<D>> {
+//         let ndim = shape.ndim();
+//         match self {
+//             &ShrinkAction::RemoveBordersStep(axis) => {
+//                 let next = Axis(axis.index() + 1);
+//                 if next.index() < ndim {
+//                     Some(ShrinkAction::RemoveBordersStep(next))
+//                 } else {
+//                     Some(ShrinkAction::ForbidInvertAxis(Axis(0)))
+//                 }
+//             }
+//             &ShrinkAction::ForbidInvertAxis(axis) => {
+//                 let next = Axis(axis.index() + 1);
+//                 if next.index() < ndim {
+//                     Some(ShrinkAction::ForbidInvertAxis(next))
+//                 } else {
+//                     Some(ShrinkAction::SortAxes)
+//                 }
+//             }
+//             &ShrinkAction::SortAxes => Some(ShrinkAction::ReduceSize),
+//             &ShrinkAction::SelectS => Some(ShrinkAction::ReduceSize), // FIXME
+//             &ShrinkAction::ShrinkElement(ref index) => {
+//                 // FIXME: `next_for` is an undocumented method from `ndarray`.
+//                 Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
+//             }
+//         }
+//     }
+// }
 
 /// `ValueTree` corresponding to `ArrayStrategy`.
 #[derive(Clone, Debug)]
 pub struct ArrayValueTree<A, D: Dimension> {
-    /// All elements that may be used to produce the values in the underlying
-    /// representation of `.current()`.
-    ///
-    /// This contains all the elements in the underlying representation of an
-    /// array with layout `base_layout`.
-    all_base_trees: Array<A, D>,
-    /// The layout of `.current()` from when the `ArrayValueTree` was initially
-    /// constructed (before any simplification).
-    base_layout: LayoutTree<D>,
-    /// The layout of `.current()`.
-    current_layout: LayoutTree<D>,
+    chunk: ChunkInfo<OwnedRepr<A>, D>,
+    current_subchunk: Option<D>,
     // min_shape: D,
     /// Action to perform on next `simplify` call.
     next_action: Option<ShrinkAction<D>>,
@@ -680,74 +505,12 @@ impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
     /// Returns the number of dimensions of arrays produced by
     /// `self.current()`.
     pub fn ndim(&self) -> usize {
-        let ndim = self.all_base_trees.ndim();
-        debug_assert_eq!(ndim, self.base_layout.ndim());
-        debug_assert_eq!(ndim, self.current_layout.ndim());
-        // TODO: more debug assert
-        ndim
+        self.chunk.ndim()
     }
 
     /// Returns the shape of `self.current()` (without actually calling `self.current()`).
     pub fn shape(&self) -> D {
-        // TODO: Update this after adding support for shrinking the size of the array.
-        self.base_layout
-            .shape_after_apply(self.all_base_trees.raw_dim())
-    }
-
-    /// Returns a mutable array view of value trees corresponding to the
-    /// visible portion of `.current()`.
-    pub fn current_trees_mut(&mut self) -> ArrayViewMut<'_, A, D> {
-        let mut current_trees = self.all_current_trees_mut();
-        self.current_layout.apply_borders_steps(&mut current_trees);
-        current_trees
-    }
-
-    /// Returns a view of all the trees used to produce the underlying
-    /// representation of `.current()`.
-    ///
-    /// Note that the memory layout of the view may not be the same as the
-    /// memory layout of the underlying representation of `.current()`.
-    pub fn all_current_trees<'a>(&'a self) -> ArrayView<'a, A, D> {
-        let ndim = self.ndim();
-        // Compute `elems` such that
-        // `base_layout.apply_borders_steps_invert(&mut all_elems)` would contain
-        // the same elements as `desired_layout.apply_borders_steps_invert(&mut
-        // elems)`.
-        let mut elems = self.all_base_trees.view();
-        for ax in 0..ndim {
-            let axis = Axis(ax);
-            let start = (self.base_layout.lower_borders[ax] - self.current_layout.lower_borders[ax])
-                as isize;
-            let end = -((self.base_layout.upper_borders[ax] - self.current_layout.upper_borders[ax])
-                as isize);
-            let step = (self.base_layout.steps[ax] / self.current_layout.steps[ax]) as isize;
-            elems.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-        elems
-    }
-
-    /// Returns a view of all the trees used to produce the underlying
-    /// representation of `.current()`.
-    ///
-    /// Note that the memory layout of the view may not be the same as the
-    /// memory layout of the underlying representation of `.current()`.
-    pub fn all_current_trees_mut<'a>(&'a mut self) -> ArrayViewMut<'a, A, D> {
-        let ndim = self.ndim();
-        // Compute `elems` such that
-        // `base_layout.apply_borders_steps_invert(&mut all_elems)` would contain
-        // the same elements as `desired_layout.apply_borders_steps_invert(&mut
-        // elems)`.
-        let mut elems = self.all_base_trees.view_mut();
-        for ax in 0..ndim {
-            let axis = Axis(ax);
-            let start = (self.base_layout.lower_borders[ax] - self.current_layout.lower_borders[ax])
-                as isize;
-            let end = -((self.base_layout.upper_borders[ax] - self.current_layout.upper_borders[ax])
-                as isize);
-            let step = (self.base_layout.steps[ax] / self.current_layout.steps[ax]) as isize;
-            elems.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-        elems
+        self.chunk.shape()
     }
 }
 
@@ -755,37 +518,70 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     type Value = Array<A::Value, D>;
 
     fn current(&self) -> Array<A::Value, D> {
-        let all_current_trees = self.all_current_trees();
-        let all_current_values = map_with_memory_order(
-            all_current_trees,
-            &self.current_layout.inverted,
-            &self.current_layout.iter_order,
-            |elem| elem.current(),
-        );
-        let mut current_values = all_current_values;
-        self.current_layout.apply_borders_steps(&mut current_values);
-        current_values
+        if let Some(subchunk_index) = self.current_subchunk {
+            self.chunk
+                .get_subchunk(subchunk_index)
+                .map_current(|elem| elem.current())
+        } else {
+            self.chunk.map_current(|elem| elem.current())
+        }
     }
 
     fn simplify(&mut self) -> bool {
+        let ndim = self.ndim();
         if let Some(action) = self.next_action.take() {
             self.next_action = action.next(&self.shape());
             match &action {
-                &ShrinkAction::UninvertAxis(axis) => {
-                    self.current_layout.inverted.write(axis, false);
+                &ShrinkAction::RemoveBordersStep(axis) => {
+                    self.chunk.remove_borders_step(axis);
+                    self.next_action = {
+                        let next_axis = Axis(axis.index() + 1);
+                        if next_axis.index() < ndim {
+                            Some(ShrinkAction::RemoveBordersStep(next_axis))
+                        } else {
+                            Some(ShrinkAction::ForbidInvertAxis(Axis(0)))
+                        }
+                    };
                 }
-                &ShrinkAction::RemoveStep(axis) => {
-                    self.current_layout.steps[axis.index()] = 1;
+                &ShrinkAction::ForbidInvertAxis(axis) => {
+                    self.chunk.forbid_invert(axis);
+                    self.next_action = {
+                        let next_axis = Axis(axis.index() + 1);
+                        if next_axis.index() < ndim {
+                            Some(ShrinkAction::ForbidInvertAxis(next_axis))
+                        } else {
+                            Some(ShrinkAction::SortAxes)
+                        }
+                    };
                 }
-                &ShrinkAction::RemoveBorders(axis) => {
-                    self.current_layout.lower_borders[axis.index()] = 0;
-                    self.current_layout.upper_borders[axis.index()] = 0;
+                &ShrinkAction::SortAxes => {
+                    self.chunk.sort_axes();
+                    self.next_action = Some(ShrinkAction::SelectSubchunk(
+                        self.chunk.first_subchunk_index(),
+                    ));
                 }
-                ShrinkAction::SortAxes => {
-                    self.current_layout.iter_order = axes_all().into_axes_for(self.ndim());
+                &ShrinkAction::SelectSubchunk(Some(ref subchunk_index)) => {
+                    if let Some(subchunk_index) = self.current_subchunk {
+                        self.chunk.narrow_to_subchunk(subchunk_index);
+                    }
+                    self.current_subchunk = Some(subchunk_index.clone());
+                    self.next_action = Some(ShrinkAction::SelectSubchunk(
+                        self.chunk
+                            .get_subchunk(subchunk_index.clone())
+                            .first_subchunk_index(),
+                    ));
                 }
-                ShrinkAction::ShrinkElement(index) => {
-                    self.all_current_trees_mut()[index.clone()].simplify();
+                &ShrinkAction::SelectSubchunk(None) => {
+                    self.next_action = Some(ShrinkAction::ShrinkElement(unimplemented!()));
+                }
+                &ShrinkAction::ShrinkElement(Some(ref index)) => {
+                    self.chunk.view_all_current_mut()[index.clone()].simplify(); // TODO: subchunk?
+                                                                                 // FIXME: `next_for` is an undocumented method from `ndarray`.
+                    self.next_action =
+                        Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())));
+                }
+                &ShrinkAction::ShrinkElement(None) => {
+                    self.next_action = None;
                 }
             }
             self.last_action = Some(action);
@@ -798,30 +594,30 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     fn complicate(&mut self) -> bool {
         if let Some(action) = self.last_action.take() {
             match action {
-                ShrinkAction::UninvertAxis(axis) => {
-                    self.current_layout
-                        .inverted
-                        .write(axis, self.base_layout.inverted.read(axis));
+                ShrinkAction::RemoveBordersStep(axis) => {
+                    self.chunk.restore_borders_step(axis);
                 }
-                ShrinkAction::RemoveStep(axis) => {
-                    self.current_layout.steps[axis.index()] = self.base_layout.steps[axis.index()];
-                }
-                ShrinkAction::RemoveBorders(axis) => {
-                    self.current_layout.lower_borders[axis.index()] =
-                        self.base_layout.lower_borders[axis.index()];
-                    self.current_layout.upper_borders[axis.index()] =
-                        self.base_layout.upper_borders[axis.index()];
+                ShrinkAction::ForbidInvertAxis(axis) => {
+                    self.chunk.allow_invert(axis);
                 }
                 ShrinkAction::SortAxes => {
-                    self.current_layout.iter_order = self.base_layout.iter_order.clone();
+                    self.chunk.unsort_axes();
                 }
-                ShrinkAction::ShrinkElement(index) => {
+                ShrinkAction::SelectSubchunk(Some(subchunk_index)) => {
+                    self.current_subchunk = None;
+                    self.next_action = Some(ShrinkAction::SelectSubchunk(
+                        self.chunk.next_subchunk_index(subchunk_index),
+                    ));
+                }
+                ShrinkAction::SelectSubchunk(None) => {}
+                ShrinkAction::ShrinkElement(Some(index)) => {
                     if self.all_current_trees_mut()[index.clone()].complicate() {
                         // `.complicate()` only attempts to *partially* undo the last
                         // simplification, so it may be possible to complicate this element further.
-                        self.last_action = Some(ShrinkAction::ShrinkElement(index));
+                        self.last_action = Some(ShrinkAction::ShrinkElement(Some(index)));
                     }
                 }
+                ShrinkAction::ShrinkElement(None) => {}
             }
             true
         } else {
