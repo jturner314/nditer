@@ -1014,6 +1014,11 @@ pub(crate) trait DimensionExt {
     where
         F: FnMut(&mut usize);
 
+    /// Applies `f` to each axis and element by mutable reference.
+    fn indexed_map_inplace<F>(&mut self, f: F)
+    where
+        F: FnMut(Axis, &mut usize);
+
     /// Calls `f` for each element by value.
     fn visitv<F>(&self, f: F)
     where
@@ -1060,6 +1065,16 @@ impl<D: Dimension> DimensionExt for D {
         F: FnMut(&mut usize),
     {
         self.slice_mut().iter_mut().for_each(f)
+    }
+
+    fn indexed_map_inplace<F>(&mut self, f: F)
+    where
+        F: FnMut(Axis, &mut usize),
+    {
+        self.slice_mut()
+            .iter_mut()
+            .enumerate()
+            .for_each(move |(ax, elem)| f(Axis(ax), elem))
     }
 
     fn visitv<F>(&self, f: F)
