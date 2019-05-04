@@ -1,13 +1,11 @@
-use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor, SubDim};
+use self::state::{BordersSteps, ChunkInfo, MemoryOrder};
+use crate::{AxesFor, AxesMask, DimensionExt};
 use itertools::{izip, Itertools};
-use ndarray::{
-    Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, OwnedRepr, RawData,
-    ShapeBuilder, Slice, ViewRepr,
-};
+use ndarray::{Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, Slice};
 use num_traits::ToPrimitive;
 use proptest::strategy::{Strategy, ValueTree};
+use proptest::test_runner::TestRunner;
 use rand::{distributions, seq::SliceRandom, Rng};
-use std::marker::PhantomData;
 use std::ops::Range;
 
 /// Randomly generates `n` numbers that have the given `sum`.
@@ -136,48 +134,6 @@ impl<D: Dimension> LayoutTree<D> {
     }
 }
 
-/// Applies `mapping` to `orig`, returning an array with memory layout matching
-/// `inverted` and `iter_order`.
-fn map_with_memory_order<'a, A, B, D, F>(
-    orig: ArrayView<'a, A, D>,
-    inverted: &AxesMask<D, IxDyn>,
-    iter_order: &AxesFor<D, D>,
-    mapping: F,
-) -> Array<B, D>
-where
-    D: Dimension + 'a,
-    F: FnMut(&'a A) -> B,
-{
-    let ndim = orig.ndim();
-    debug_assert_eq!(ndim, inverted.for_ndim());
-    debug_assert_eq!(ndim, iter_order.for_ndim());
-    let shape = orig.raw_dim();
-    let mut orig_permuted = orig.permuted_axes(iter_order.clone().into_inner());
-    inverted.indexed_visitv(|axis, inv| {
-        if inv {
-            orig_permuted.invert_axis(axis)
-        }
-    });
-
-    let new_flat: Vec<B> = orig_permuted.iter().map(mapping).collect();
-    let mut new_strides = D::zeros(ndim);
-    if !orig_permuted.is_empty() {
-        let mut cum_prod: isize = 1;
-        for &ax in iter_order.slice().iter().rev() {
-            let len = shape[ax];
-            new_strides[ax] = cum_prod as usize;
-            cum_prod *= len as isize;
-        }
-    }
-    let mut new = Array::from_shape_vec(shape.strides(new_strides), new_flat).unwrap();
-    inverted.indexed_visitv(|axis, inv| {
-        if inv {
-            new.invert_axis(axis)
-        }
-    });
-    new
-}
-
 // struct AxesPermutation<D: Dimension>(AxesFor<D, D>);
 
 // impl<D: Dimension> AxesPermutation<D> {
@@ -210,248 +166,6 @@ where
 //     step_bw_chunks: D,
 //     chunk_visible_shape: D,
 // }
-
-#[derive(Clone, Debug)]
-struct ChunkInfo<D: Dimension> {
-    first_visible_index: D,
-    visible_shape: D,
-}
-
-#[derive(Clone, Debug)]
-struct BordersSteps<D: Dimension> {
-    base_lower_borders: D,
-    base_upper_borders: D,
-    base_steps: D,
-    remove_borders_steps: AxesMask<D, IxDyn>,
-}
-
-#[derive(Clone, Debug)]
-struct MemoryOrder<D: Dimension> {
-    base_invert: AxesMask<D, IxDyn>,
-    allow_invert: AxesMask<D, IxDyn>,
-
-    base_axis_order: AxesFor<D, D>,
-    sort_axes: bool,
-}
-
-impl<D: Dimension> ChunkInfo<D> {
-    pub fn ndim(&self) -> usize {
-        // TODO: debug assert?
-        self.visible_shape.ndim()
-    }
-
-    pub fn shape(&self) -> D {
-        self.visible_shape.clone()
-    }
-
-    pub fn shape_with_hidden(&self, borders_steps: &BordersSteps<D>) -> D {
-        let ndim = self.ndim();
-        let mut shape = D::zeros(ndim);
-        for ax in 0..ndim {
-            let axis = Axis(ax);
-            if borders_steps.remove_borders_steps.read(axis) {
-                shape[ax] = self.visible_shape[ax];
-            } else {
-                shape[ax] = borders_steps.base_lower_borders[ax]
-                    + borders_steps.base_steps[ax] * self.visible_shape[ax]
-                    + borders_steps.base_upper_borders[ax];
-            };
-        }
-        shape
-    }
-
-    /// Returns a view of the visible portion of the current chunk.
-    pub fn slice<S>(&self, all_trees: &mut ArrayBase<S, D>, borders_steps: &BordersSteps<D>)
-    where
-        S: RawData,
-    {
-        let trees = all_trees;
-        for ax in 0..self.ndim() {
-            let axis = Axis(ax);
-            let start = self.first_visible_index[ax] as isize;
-            let step = borders_steps.base_steps[ax] as isize;
-            let end = start + step * self.visible_shape[ax] as isize;
-            trees.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-    }
-
-    /// Returns a view of the underlying representation of an owned copy of the
-    /// current chunk.
-    pub fn slice_with_hidden<S>(
-        &self,
-        all_trees: &mut ArrayBase<S, D>,
-        borders_steps: &BordersSteps<D>,
-    ) where
-        S: RawData,
-    {
-        let trees = all_trees;
-        for ax in 0..self.ndim() {
-            let axis = Axis(ax);
-            let (start, end, step) = if borders_steps.remove_borders_steps.read(axis) {
-                let start = self.first_visible_index[ax];
-                let step = borders_steps.base_steps[ax];
-                let end = start + step * self.visible_shape[ax];
-                (start as isize, end as isize, step as isize)
-            } else {
-                let start = self.first_visible_index[ax] - borders_steps.base_lower_borders[ax];
-                let step = 1;
-                let end =
-                    start + step * self.visible_shape[ax] + borders_steps.base_upper_borders[ax];
-                (start as isize, end as isize, step as isize)
-            };
-            trees.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
-        }
-    }
-
-    /// Applies the mapping to the underlying representation of the current
-    /// chunk, returning an array sliced to show only the visible portion.
-    pub fn map<S, F, B>(
-        &self,
-        all_trees: &ArrayBase<S, D>,
-        borders_steps: &BordersSteps<D>,
-        memory_order: &MemoryOrder<D>,
-        mapping: F,
-    ) -> Array<B, D>
-    where
-        S: Data,
-        F: FnMut(&S::Elem) -> B,
-    {
-        // TODO: check consistentency ndim
-        let mut with_hidden = self.map_with_hidden(all_trees, borders_steps, memory_order, mapping);
-        for ax in 0..self.ndim() {
-            let axis = Axis(ax);
-            if !borders_steps.remove_borders_steps.read(axis) {
-                with_hidden.slice_axis_inplace(
-                    axis,
-                    Slice {
-                        start: borders_steps.base_lower_borders[ax] as isize,
-                        end: Some(-(borders_steps.base_upper_borders[ax] as isize)),
-                        step: borders_steps.base_steps[ax] as isize,
-                    },
-                );
-            }
-        }
-        with_hidden
-    }
-
-    /// Applies the mapping to the underlying representation of the current
-    /// chunk, returning the underlying representation.
-    pub fn map_with_hidden<S, F, B>(
-        &self,
-        all_trees: &ArrayBase<S, D>,
-        borders_steps: &BordersSteps<D>,
-        memory_order: &MemoryOrder<D>,
-        mapping: F,
-    ) -> Array<B, D>
-    where
-        S: Data,
-        F: FnMut(&S::Elem) -> B,
-    {
-        let mut trees = all_trees.view();
-        self.slice_with_hidden(&mut trees, borders_steps);
-        map_with_memory_order(
-            trees,
-            &((&memory_order.allow_invert) & (&memory_order.base_invert)),
-            if memory_order.sort_axes {
-                &axes_all().into_axes_for(self.ndim())
-            } else {
-                &memory_order.base_axis_order
-            },
-            mapping,
-        )
-    }
-
-    pub fn first_subchunk_index(&self) -> Option<D> {
-        let can_subdivide = self.visible_shape.foldv(false, |acc, len| acc & (len >= 2));
-        if can_subdivide {
-            Some(D::zeros(self.ndim()))
-        } else {
-            None
-        }
-    }
-
-    pub fn next_subchunk_index(&self, mut index: D) -> Option<D> {
-        let ndim = self.ndim();
-        assert_eq!(index.ndim(), ndim);
-        for ax in (0..ndim).rev() {
-            if self.visible_shape[ax] >= 2 {
-                index[ax] += 1;
-                if index[ax] < 2 {
-                    return Some(index);
-                } else {
-                    index[ax] = 0;
-                }
-            } else {
-                assert_eq!(index[ax], 0);
-            }
-        }
-        None
-    }
-
-    pub fn get_subchunk(&self, index: D) -> ChunkInfo<D> {
-        let mut subchunk = self.clone();
-        subchunk.narrow_to_subchunk(index);
-        subchunk
-    }
-
-    pub fn narrow_to_subchunk(&mut self, index: D) {
-        let ndim = self.ndim();
-        assert_eq!(index.ndim(), ndim);
-        let ChunkInfo {
-            first_visible_index,
-            visible_shape,
-        } = self;
-        first_visible_index.indexed_map_inplace(|axis, vis_ind| {
-            let ax = axis.index();
-            *vis_ind += match index[ax] {
-                0 => 0,
-                1 => visible_shape[ax] / 2,
-                _ => panic!("Index out of bounds for axis {}", ax),
-            };
-        });
-        visible_shape.map_inplace(|len| *len = *len / 2 + (*len % 2 != 0) as usize);
-    }
-}
-
-impl<D: Dimension> BordersSteps<D> {
-    /// Removes the borders and step for the owned representation of the
-    /// current chunk.
-    pub fn remove_borders_step(&mut self, axis: Axis) {
-        self.remove_borders_steps.write(axis, true);
-    }
-
-    /// Restores the borders and step for the owned representation of the
-    /// current chunk.
-    pub fn restore_borders_step(&mut self, axis: Axis) {
-        self.remove_borders_steps.write(axis, false);
-    }
-}
-
-impl<D: Dimension> MemoryOrder<D> {
-    /// Forbids the given axis from having a negative stride in the owned
-    /// representation of the current chunk.
-    pub fn forbid_invert(&mut self, axis: Axis) {
-        self.allow_invert.write(axis, false);
-    }
-
-    /// Allows the given axis to have a negative stride in the owned
-    /// representation of the current chunk.
-    pub fn allow_invert(&mut self, axis: Axis) {
-        self.allow_invert.write(axis, true);
-    }
-
-    /// Forces the axes to be in order (ignoring inversions) in the owned
-    /// representation of the current chunk.
-    pub fn sort_axes(&mut self) {
-        self.sort_axes = true;
-    }
-
-    /// Allows the axes to be out-of-order in the owned representation of the
-    /// current chunk.
-    pub fn unsort_axes(&mut self) {
-        self.sort_axes = false;
-    }
-}
 
 /// A shrink action for an `ArrayValueTree`.
 #[derive(Clone, Debug)]
@@ -513,6 +227,44 @@ pub struct ArrayValueTree<A, D: Dimension> {
 }
 
 impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
+    pub fn new<T>(
+        elem_strategy: &T,
+        runner: &mut TestRunner,
+        visible_shape: D,
+        borders_steps: BordersSteps<D>,
+        memory_order: MemoryOrder<D>,
+    ) -> Result<ArrayValueTree<A, D>, proptest::test_runner::Reason>
+    where
+        T: Strategy<Tree = A, Value = A::Value>,
+    {
+        let ndim = visible_shape.ndim();
+        assert_eq!(ndim, borders_steps.ndim());
+        assert_eq!(ndim, memory_order.ndim());
+        let current_chunk = ChunkInfo::first_chunk(visible_shape, &borders_steps);
+        let shape_all = current_chunk.shape_with_hidden(&borders_steps);
+        let all_trees = Array::from_shape_vec(
+            shape_all,
+            std::iter::repeat_with(|| elem_strategy.new_tree(runner))
+                .take(shape_all.size())
+                .collect()?,
+        )
+        .unwrap();
+        let next_action = Some(if ndim == 0 {
+            ShrinkAction::ShrinkElement(Some(D::zeros(ndim)))
+        } else {
+            ShrinkAction::RemoveBordersStep(Axis(0))
+        });
+        Ok(ArrayValueTree {
+            all_trees,
+            borders_steps,
+            memory_order,
+            parent_chunk: None,
+            current_chunk,
+            next_action,
+            last_action: None,
+        })
+    }
+
     /// Returns the number of dimensions of arrays produced by
     /// `self.current()`.
     pub fn ndim(&self) -> usize {
@@ -680,3 +432,5 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
 // let shape_with_borders = elements_with_borders.raw_dim();
 // let data: Vec<_> = elements_with_borders.permuted_axes().iter().cloned().collect();
 // let with_borders = Array::from_shape_strides(shape_with_borders.strides(strides_without_steps)).unwrap();
+
+mod state;
