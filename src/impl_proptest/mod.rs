@@ -1,7 +1,6 @@
 use self::state::{BordersSteps, ChunkInfo, MemoryOrder};
-use crate::{AxesFor, AxesMask, DimensionExt};
 use itertools::{izip, Itertools};
-use ndarray::{Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, Slice};
+use ndarray::{Array, ArrayBase, ArrayViewMut, Axis, Dimension};
 use num_traits::ToPrimitive;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
@@ -69,104 +68,6 @@ where
     shape
 }
 
-#[derive(Clone, Debug)]
-struct LayoutTree<D: Dimension> {
-    /// Lower borders to cut off when slicing.
-    lower_borders: D,
-    /// Upper borders to cut off when slicing.
-    upper_borders: D,
-    /// Positive steps for use in slicing.
-    steps: D,
-    /// Which axes are in reverse order in memory.
-    inverted: AxesMask<D, IxDyn>,
-    /// Iteration order over axes such that iteration occurs in memory order
-    /// (ignoring inversions).
-    iter_order: AxesFor<D, D>,
-}
-
-impl<D: Dimension> LayoutTree<D> {
-    /// Returns the number of axes.
-    pub fn ndim(&self) -> usize {
-        let ndim = self.lower_borders.ndim();
-        debug_assert_eq!(ndim, self.upper_borders.ndim());
-        debug_assert_eq!(ndim, self.steps.ndim());
-        debug_assert_eq!(ndim, self.inverted.for_ndim());
-        debug_assert_eq!(ndim, self.iter_order.for_ndim());
-        debug_assert_eq!(ndim, self.iter_order.num_axes());
-        ndim
-    }
-
-    /// Returns the shape after calling `self.apply_borders_steps_invert` on an
-    /// array of shape `before`.
-    pub fn shape_after_apply(&self, before: D) -> D {
-        before.indexed_mapv(|axis, len| {
-            let ax = axis.index();
-            let without_borders = len - self.lower_borders[ax] - self.upper_borders[ax];
-            let after_step = without_borders / self.steps[ax]
-                + if without_borders % self.steps[ax] != 0 {
-                    1
-                } else {
-                    0
-                };
-            after_step
-        })
-    }
-
-    /// Given the underlying array of elements, removes the borders and applies
-    /// the steps such that the resulting array matches the layout specified by
-    /// `self` (ignoring `iter_order` and `invert`).
-    ///
-    /// If you want the resulting array to have a memory layout matching
-    /// `self.iter_order` and `self.invert`, `arr` should have that
-    /// `iter_order`.
-    pub fn apply_borders_steps<S: Data>(&self, arr: &mut ArrayBase<S, D>) {
-        for ax in 0..self.ndim() {
-            let axis = Axis(ax);
-            arr.slice_axis_inplace(
-                axis,
-                Slice::new(
-                    self.lower_borders[ax] as isize,
-                    Some(self.upper_borders[ax] as isize),
-                    self.steps[ax] as isize,
-                ),
-            );
-        }
-    }
-}
-
-// struct AxesPermutation<D: Dimension>(AxesFor<D, D>);
-
-// impl<D: Dimension> AxesPermutation<D> {
-//     /// Applies the permutation to the array.
-//     pub fn apply<S: Data, D>(&self, arr: ArrayBase<S, D>) -> ArrayBase<S, D> {
-//         arr.permuted_axes(self.into_inner())
-//     }
-
-//     /// Returns the permutation such that `returned.apply(self.apply(arr)) ==
-//     /// arr`.
-//     pub fn inverse(&self) -> AxesFor<D, D> {
-//         unimplemented!()
-//     }
-
-//     /// Returns the permutation such that `composed.apply(arr) ==
-//     /// self.apply(inner.apply(arr))`.
-//     pub fn compose(&self, inner: &AxesPermutation<D>) -> AxesPermutation<D> {
-//         unimplemented!()
-//     }
-
-//     /// Returns the permutation such that `self.apply(arr) ==
-//     /// decomposed.apply(inner.apply(arr))`.
-//     pub fn decompose(&self, inner: &AxesPermutation<D>) -> AxesPermutation<D> {
-//         unimplemented!()
-//     }
-// }
-
-// struct foo {
-//     chunk_index: D,
-//     step_bw_chunks: D,
-//     chunk_visible_shape: D,
-// }
-
 /// A shrink action for an `ArrayValueTree`.
 #[derive(Clone, Debug)]
 enum ShrinkAction<D: Dimension> {
@@ -179,37 +80,6 @@ enum ShrinkAction<D: Dimension> {
     /// Note that the index is for `.all_current_trees()`, not `all_base_trees`.
     ShrinkElement(Option<D>),
 }
-
-// impl<D: Dimension> ShrinkAction<D> {
-//     /// Returns the next shrink action for an array of the given shape.
-//     pub fn next(&self, shape: &D) -> Option<ShrinkAction<D>> {
-//         let ndim = shape.ndim();
-//         match self {
-//             &ShrinkAction::RemoveBordersStep(axis) => {
-//                 let next = Axis(axis.index() + 1);
-//                 if next.index() < ndim {
-//                     Some(ShrinkAction::RemoveBordersStep(next))
-//                 } else {
-//                     Some(ShrinkAction::ForbidInvertAxis(Axis(0)))
-//                 }
-//             }
-//             &ShrinkAction::ForbidInvertAxis(axis) => {
-//                 let next = Axis(axis.index() + 1);
-//                 if next.index() < ndim {
-//                     Some(ShrinkAction::ForbidInvertAxis(next))
-//                 } else {
-//                     Some(ShrinkAction::SortAxes)
-//                 }
-//             }
-//             &ShrinkAction::SortAxes => Some(ShrinkAction::ReduceSize),
-//             &ShrinkAction::SelectS => Some(ShrinkAction::ReduceSize), // FIXME
-//             &ShrinkAction::ShrinkElement(ref index) => {
-//                 // FIXME: `next_for` is an undocumented method from `ndarray`.
-//                 Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())?))
-//             }
-//         }
-//     }
-// }
 
 /// `ValueTree` corresponding to `ArrayStrategy`.
 #[derive(Clone, Debug)]
@@ -399,38 +269,5 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
         }
     }
 }
-
-// let mut shape_plus_borders =
-//     self.layout_state
-//         .remove_borders
-//         .indexed_mapv_to_dim(|axis, remove| {
-//             if remove {
-//                 self.base_layout.shape[axis.index()]
-//             } else {
-//                 self.base_layout.shape[axis.index()]
-//                     + self.base_layout.lower_borders[axis.index()]
-//                     + self.base_layout.upper_borders[axis.index()]
-//             }
-//         });
-// let mut elements_with_borders = all_base_trees;
-// self.layout_state
-//     .remove_borders
-//     .indexed_visitv(|axis, remove| {
-//         if remove {
-//             elements_with_borders.slice_axis_inplace(
-//                 axis,
-//                 (self.base_layout.lower_borders[axis.index()] as isize)
-//                     ..-(self.base_layout.upper_borders[axis.index()] as isize),
-//             );
-//         }
-//     });
-// self.layout_state
-//     .uninvert_axes
-//     .indexed_visitv(|axis, uninvert| {
-//         unimplemented!()
-//     });
-// let shape_with_borders = elements_with_borders.raw_dim();
-// let data: Vec<_> = elements_with_borders.permuted_axes().iter().cloned().collect();
-// let with_borders = Array::from_shape_strides(shape_with_borders.strides(strides_without_steps)).unwrap();
 
 mod state;
