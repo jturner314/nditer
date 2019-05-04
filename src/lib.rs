@@ -1067,7 +1067,7 @@ impl<D: Dimension> DimensionExt for D {
         self.slice_mut().iter_mut().for_each(f)
     }
 
-    fn indexed_map_inplace<F>(&mut self, f: F)
+    fn indexed_map_inplace<F>(&mut self, mut f: F)
     where
         F: FnMut(Axis, &mut usize),
     {
