@@ -2,6 +2,7 @@ use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor};
 use ndarray::{
     Array, ArrayBase, ArrayView, Axis, Data, Dimension, IxDyn, RawData, ShapeBuilder, Slice,
 };
+use rand::{distributions::Uniform, Rng};
 
 /// Applies `mapping` to `orig`, returning an array with memory layout matching
 /// `inverted` and `iter_order`.
@@ -92,6 +93,7 @@ impl<D: Dimension> ChunkInfo<D> {
 
     pub fn shape_with_hidden(&self, borders_steps: &BordersSteps<D>) -> D {
         let ndim = self.ndim();
+        assert_eq!(ndim, borders_steps.ndim());
         let mut shape = D::zeros(ndim);
         for ax in 0..ndim {
             let axis = Axis(ax);
@@ -111,8 +113,10 @@ impl<D: Dimension> ChunkInfo<D> {
     where
         S: RawData,
     {
+        let ndim = self.ndim();
+        assert_eq!(ndim, all_trees.ndim());
         let trees = all_trees;
-        for ax in 0..self.ndim() {
+        for ax in 0..ndim {
             let axis = Axis(ax);
             let start = self.first_visible_index[ax] as isize;
             let step = borders_steps.base_steps[ax] as isize;
@@ -130,6 +134,9 @@ impl<D: Dimension> ChunkInfo<D> {
     ) where
         S: RawData,
     {
+        let ndim = self.ndim();
+        assert_eq!(ndim, all_trees.ndim());
+        assert_eq!(ndim, borders_steps.ndim());
         let trees = all_trees;
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
@@ -141,8 +148,9 @@ impl<D: Dimension> ChunkInfo<D> {
             } else {
                 let start = self.first_visible_index[ax] - borders_steps.base_lower_borders[ax];
                 let step = 1;
-                let end =
-                    start + step * self.visible_shape[ax] + borders_steps.base_upper_borders[ax];
+                let end = self.first_visible_index[ax]
+                    + step * self.visible_shape[ax]
+                    + borders_steps.base_upper_borders[ax];
                 (start as isize, end as isize, step as isize)
             };
             trees.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
@@ -162,7 +170,6 @@ impl<D: Dimension> ChunkInfo<D> {
         S: Data,
         F: FnMut(&S::Elem) -> B,
     {
-        // TODO: check consistentency ndim
         let mut with_hidden = self.map_with_hidden(all_trees, borders_steps, memory_order, mapping);
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
@@ -193,6 +200,10 @@ impl<D: Dimension> ChunkInfo<D> {
         S: Data,
         F: FnMut(&S::Elem) -> B,
     {
+        let ndim = self.ndim();
+        assert_eq!(ndim, all_trees.ndim());
+        assert_eq!(ndim, borders_steps.ndim());
+        assert_eq!(ndim, memory_order.ndim());
         let mut trees = all_trees.view();
         self.slice_with_hidden(&mut trees, borders_steps);
         let current_invert = (&memory_order.allow_invert) & (&memory_order.base_invert);
@@ -214,7 +225,7 @@ impl<D: Dimension> ChunkInfo<D> {
     }
 
     pub fn first_subchunk_index(&self) -> Option<D> {
-        let can_subdivide = self.visible_shape.foldv(false, |acc, len| acc & (len >= 2));
+        let can_subdivide = self.visible_shape.foldv(false, |acc, len| acc | (len >= 2));
         if can_subdivide {
             Some(D::zeros(self.ndim()))
         } else {
@@ -269,7 +280,7 @@ impl<D: Dimension> BordersSteps<D> {
     /// Creates a new `BordersSteps` instance for the given borders and steps.
     ///
     /// **Panics** if the ndim is not consistent between the parameters.
-    pub fn new(&self, lower_borders: D, upper_borders: D, steps: D) -> BordersSteps<D> {
+    pub fn new(lower_borders: D, upper_borders: D, steps: D) -> BordersSteps<D> {
         let ndim = lower_borders.ndim();
         assert_eq!(upper_borders.ndim(), ndim);
         assert_eq!(steps.ndim(), ndim);
@@ -279,6 +290,28 @@ impl<D: Dimension> BordersSteps<D> {
             base_steps: steps,
             remove_borders_steps: AxesMask::all_false(ndim).into_dyn_num_true(),
         }
+    }
+
+    pub fn gen_random<R: Rng>(
+        rng: &mut R,
+        ndim: usize,
+        max_lower_border: usize,
+        max_upper_border: usize,
+        max_step: usize,
+    ) -> BordersSteps<D> {
+        let mut lower_borders = D::zeros(ndim);
+        let mut upper_borders = D::zeros(ndim);
+        let mut steps = D::zeros(ndim);
+        let lower_border_distro = Uniform::new_inclusive(0, max_lower_border);
+        let upper_border_distro = Uniform::new_inclusive(0, max_upper_border);
+        // TODO: Strides of zero
+        let step_distro = Uniform::new_inclusive(1, max_step);
+        for ax in 0..ndim {
+            lower_borders[ax] = rng.sample(lower_border_distro);
+            upper_borders[ax] = rng.sample(upper_border_distro);
+            steps[ax] = rng.sample(step_distro);
+        }
+        BordersSteps::new(lower_borders, upper_borders, steps)
     }
 
     /// Returns the `ndim` this `BordersSteps` is for.
@@ -348,6 +381,25 @@ impl<D: Dimension> MemoryOrder<D> {
             base_axis_order: axis_order,
             sort_axes: false,
         }
+    }
+
+    pub fn gen_random<R: Rng>(
+        rng: &mut R,
+        ndim: usize,
+        invert_probability: f64,
+        permute_axes: bool,
+    ) -> MemoryOrder<D> {
+        let mut invert = AxesMask::all_false(ndim).into_dyn_num_true();
+        for ax in 0..ndim {
+            if rng.gen::<f64>() < invert_probability {
+                invert.write(Axis(ax), true);
+            }
+        }
+        let mut axis_order = axes_all().into_axes_for(ndim);
+        if permute_axes {
+            axis_order.shuffle(rng);
+        }
+        MemoryOrder::new(invert, axis_order)
     }
 
     /// Returns the number of dimensions this `MemoryOrder` is for.
