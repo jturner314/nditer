@@ -1,7 +1,7 @@
 use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor, SubDim};
 use itertools::{izip, Itertools};
 use ndarray::{
-    Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, OwnedRepr,
+    Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Data, Dimension, IxDyn, OwnedRepr, RawData,
     ShapeBuilder, Slice, ViewRepr,
 };
 use num_traits::ToPrimitive;
@@ -145,7 +145,7 @@ fn map_with_memory_order<'a, A, B, D, F>(
     mapping: F,
 ) -> Array<B, D>
 where
-    D: Dimension,
+    D: Dimension + 'a,
     F: FnMut(&'a A) -> B,
 {
     let ndim = orig.ndim();
@@ -212,21 +212,21 @@ where
 // }
 
 #[derive(Clone, Debug)]
-struct ChunkInfo<S: Data, D: Dimension> {
-    /// Array of all the trees that could be included in the underlying
-    /// representation of chunks.
-    ///
-    /// The memory layout of this array doesn't matter.
-    all_trees: ArrayBase<S, D>,
-
+struct ChunkInfo<D: Dimension> {
     first_visible_index: D,
     visible_shape: D,
+}
 
+#[derive(Clone, Debug)]
+struct BordersSteps<D: Dimension> {
     base_lower_borders: D,
     base_upper_borders: D,
     base_steps: D,
     remove_borders_steps: AxesMask<D, IxDyn>,
+}
 
+#[derive(Clone, Debug)]
+struct MemoryOrder<D: Dimension> {
     base_invert: AxesMask<D, IxDyn>,
     allow_invert: AxesMask<D, IxDyn>,
 
@@ -234,148 +234,131 @@ struct ChunkInfo<S: Data, D: Dimension> {
     sort_axes: bool,
 }
 
-impl<A, S, D> ChunkInfo<S, D>
-where
-    S: Data<Elem = A>,
-    D: Dimension,
-{
+impl<D: Dimension> ChunkInfo<D> {
     pub fn ndim(&self) -> usize {
         // TODO: debug assert?
-        self.all_trees.ndim()
+        self.visible_shape.ndim()
     }
 
     pub fn shape(&self) -> D {
         self.visible_shape.clone()
     }
 
-    // ///
-    // pub fn lower_border(&self, axis: Axis) -> usize {
-    //     if self.remove_borders_steps.read(axis) {
-    //         0
-    //     } else {
-    //         self.base_lower_borders[axis.index()]
-    //     }
-    // }
-
-    /// Returns a view of all the trees that could be included in the
-    /// underlying representation of chunks.
-    pub fn view_all(&self) -> ArrayView<'_, A, D> {
-        self.all_trees.view()
+    pub fn shape_with_hidden(&self, borders_steps: &BordersSteps<D>) -> D {
+        let ndim = self.ndim();
+        let mut shape = D::zeros(ndim);
+        for ax in 0..ndim {
+            let axis = Axis(ax);
+            if borders_steps.remove_borders_steps.read(axis) {
+                shape[ax] = self.visible_shape[ax];
+            } else {
+                shape[ax] = borders_steps.base_lower_borders[ax]
+                    + borders_steps.base_steps[ax] * self.visible_shape[ax]
+                    + borders_steps.base_upper_borders[ax];
+            };
+        }
+        shape
     }
 
     /// Returns a view of the visible portion of the current chunk.
-    pub fn view_current(&self) -> ArrayView<'_, A, D> {
-        let mut view = self.all_trees.view();
+    pub fn slice<S>(&self, all_trees: &mut ArrayBase<S, D>, borders_steps: &BordersSteps<D>)
+    where
+        S: RawData,
+    {
+        let trees = all_trees;
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
             let start = self.first_visible_index[ax] as isize;
-            let step = self.base_steps[ax] as isize;
+            let step = borders_steps.base_steps[ax] as isize;
             let end = start + step * self.visible_shape[ax] as isize;
-            view.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+            trees.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
         }
-        view
     }
 
     /// Returns a view of the underlying representation of an owned copy of the
     /// current chunk.
-    pub fn view_all_current(&self) -> ArrayView<'_, A, D> {
-        let mut view = self.all_trees.view();
+    pub fn slice_with_hidden<S>(
+        &self,
+        all_trees: &mut ArrayBase<S, D>,
+        borders_steps: &BordersSteps<D>,
+    ) where
+        S: RawData,
+    {
+        let trees = all_trees;
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
-            let (start, end, step) = if self.remove_borders_steps.read(axis) {
+            let (start, end, step) = if borders_steps.remove_borders_steps.read(axis) {
                 let start = self.first_visible_index[ax];
-                let step = self.base_steps[ax];
+                let step = borders_steps.base_steps[ax];
                 let end = start + step * self.visible_shape[ax];
                 (start as isize, end as isize, step as isize)
             } else {
-                let start = self.first_visible_index[ax] - self.base_lower_borders[ax];
+                let start = self.first_visible_index[ax] - borders_steps.base_lower_borders[ax];
                 let step = 1;
-                let end = start + step * self.visible_shape[ax] + self.base_upper_borders[ax];
+                let end =
+                    start + step * self.visible_shape[ax] + borders_steps.base_upper_borders[ax];
                 (start as isize, end as isize, step as isize)
             };
-            view.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
+            trees.slice_axis_inplace(axis, Slice::new(start, Some(end), step));
         }
-        view
     }
 
     /// Applies the mapping to the underlying representation of the current
     /// chunk, returning an array sliced to show only the visible portion.
-    pub fn map_current<'a, F, B>(&'a self, mapping: F) -> Array<B, D>
+    pub fn map<S, F, B>(
+        &self,
+        all_trees: &ArrayBase<S, D>,
+        borders_steps: &BordersSteps<D>,
+        memory_order: &MemoryOrder<D>,
+        mapping: F,
+    ) -> Array<B, D>
     where
-        A: 'a,
-        F: FnMut(&'a A) -> B,
+        S: Data,
+        F: FnMut(&S::Elem) -> B,
     {
-        let mut current = self.map_all_current(mapping);
+        // TODO: check consistentency ndim
+        let mut with_hidden = self.map_with_hidden(all_trees, borders_steps, memory_order, mapping);
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
-            if !self.remove_borders_steps.read(axis) {
-                current.slice_axis_inplace(
+            if !borders_steps.remove_borders_steps.read(axis) {
+                with_hidden.slice_axis_inplace(
                     axis,
                     Slice {
-                        start: self.base_lower_borders[ax] as isize,
-                        end: Some(-(self.base_upper_borders[ax] as isize)),
-                        step: self.base_steps[ax] as isize,
+                        start: borders_steps.base_lower_borders[ax] as isize,
+                        end: Some(-(borders_steps.base_upper_borders[ax] as isize)),
+                        step: borders_steps.base_steps[ax] as isize,
                     },
                 );
             }
         }
-        current
+        with_hidden
     }
 
     /// Applies the mapping to the underlying representation of the current
     /// chunk, returning the underlying representation.
-    pub fn map_all_current<'a, F, B>(&'a self, mapping: F) -> Array<B, D>
+    pub fn map_with_hidden<S, F, B>(
+        &self,
+        all_trees: &ArrayBase<S, D>,
+        borders_steps: &BordersSteps<D>,
+        memory_order: &MemoryOrder<D>,
+        mapping: F,
+    ) -> Array<B, D>
     where
-        A: 'a,
-        F: FnMut(&'a A) -> B,
+        S: Data,
+        F: FnMut(&S::Elem) -> B,
     {
-        let current_inverted = (&self.allow_invert) & (&self.base_invert);
+        let mut trees = all_trees.view();
+        self.slice_with_hidden(&mut trees, borders_steps);
         map_with_memory_order(
-            self.view_all_current(),
-            &current_inverted,
-            &if self.sort_axes {
-                axes_all().into_axes_for(self.ndim())
+            trees,
+            &((&memory_order.allow_invert) & (&memory_order.base_invert)),
+            if memory_order.sort_axes {
+                &axes_all().into_axes_for(self.ndim())
             } else {
-                self.base_axis_order
+                &memory_order.base_axis_order
             },
             mapping,
         )
-    }
-
-    /// Removes the borders and step for the owned representation of the
-    /// current chunk.
-    pub fn remove_borders_step(&mut self, axis: Axis) {
-        self.remove_borders_steps.write(axis, true);
-    }
-
-    /// Restores the borders and step for the owned representation of the
-    /// current chunk.
-    pub fn restore_borders_step(&mut self, axis: Axis) {
-        self.remove_borders_steps.write(axis, false);
-    }
-
-    /// Forbids the given axis from having a negative stride in the owned
-    /// representation of the current chunk.
-    pub fn forbid_invert(&mut self, axis: Axis) {
-        self.allow_invert.write(axis, false);
-    }
-
-    /// Allows the given axis to have a negative stride in the owned
-    /// representation of the current chunk.
-    pub fn allow_invert(&mut self, axis: Axis) {
-        self.allow_invert.write(axis, true);
-    }
-
-    /// Forces the axes to be in order (ignoring inversions) in the owned
-    /// representation of the current chunk.
-    pub fn sort_axes(&mut self) {
-        self.sort_axes = true;
-    }
-
-    /// Allows the axes to be out-of-order in the owned representation of the
-    /// current chunk.
-    pub fn unsort_axes(&mut self) {
-        self.sort_axes = false;
     }
 
     pub fn first_subchunk_index(&self) -> Option<D> {
@@ -405,43 +388,68 @@ where
         None
     }
 
-    pub fn get_subchunk(&self, index: D) -> ChunkInfo<ViewRepr<&'_ A>, D> {
-        // TODO: this is unnecessarily expensive.
-        let mut chunk = ChunkInfo {
-            all_trees: self.all_trees.view(),
-
-            first_visible_index: self.first_visible_index.clone(),
-            visible_shape: self.visible_shape.clone(),
-
-            base_lower_borders: self.base_lower_borders.clone(),
-            base_upper_borders: self.base_upper_borders.clone(),
-            base_steps: self.base_steps.clone(),
-            remove_borders_steps: self.remove_borders_steps.clone(),
-
-            base_invert: self.base_invert.clone(),
-            allow_invert: self.allow_invert.clone(),
-
-            base_axis_order: self.base_axis_order.clone(),
-            sort_axes: self.sort_axes.clone(),
-        };
-        chunk.narrow_to_subchunk(index);
-        chunk
+    pub fn get_subchunk(&self, index: D) -> ChunkInfo<D> {
+        let mut subchunk = self.clone();
+        subchunk.narrow_to_subchunk(index);
+        subchunk
     }
 
     pub fn narrow_to_subchunk(&mut self, index: D) {
         let ndim = self.ndim();
         assert_eq!(index.ndim(), ndim);
-        self.first_visible_index
-            .indexed_map_inplace(|axis, vis_ind| {
-                let ax = axis.index();
-                *vis_ind += match index[ax] {
-                    0 => 0,
-                    1 => self.visible_shape[ax] / 2,
-                    _ => panic!("Index out of bounds for axis {}", ax),
-                };
-            });
-        self.visible_shape
-            .map_inplace(|len| *len = *len / 2 + (*len % 2 != 0) as usize);
+        let ChunkInfo {
+            first_visible_index,
+            visible_shape,
+        } = self;
+        first_visible_index.indexed_map_inplace(|axis, vis_ind| {
+            let ax = axis.index();
+            *vis_ind += match index[ax] {
+                0 => 0,
+                1 => visible_shape[ax] / 2,
+                _ => panic!("Index out of bounds for axis {}", ax),
+            };
+        });
+        visible_shape.map_inplace(|len| *len = *len / 2 + (*len % 2 != 0) as usize);
+    }
+}
+
+impl<D: Dimension> BordersSteps<D> {
+    /// Removes the borders and step for the owned representation of the
+    /// current chunk.
+    pub fn remove_borders_step(&mut self, axis: Axis) {
+        self.remove_borders_steps.write(axis, true);
+    }
+
+    /// Restores the borders and step for the owned representation of the
+    /// current chunk.
+    pub fn restore_borders_step(&mut self, axis: Axis) {
+        self.remove_borders_steps.write(axis, false);
+    }
+}
+
+impl<D: Dimension> MemoryOrder<D> {
+    /// Forbids the given axis from having a negative stride in the owned
+    /// representation of the current chunk.
+    pub fn forbid_invert(&mut self, axis: Axis) {
+        self.allow_invert.write(axis, false);
+    }
+
+    /// Allows the given axis to have a negative stride in the owned
+    /// representation of the current chunk.
+    pub fn allow_invert(&mut self, axis: Axis) {
+        self.allow_invert.write(axis, true);
+    }
+
+    /// Forces the axes to be in order (ignoring inversions) in the owned
+    /// representation of the current chunk.
+    pub fn sort_axes(&mut self) {
+        self.sort_axes = true;
+    }
+
+    /// Allows the axes to be out-of-order in the owned representation of the
+    /// current chunk.
+    pub fn unsort_axes(&mut self) {
+        self.sort_axes = false;
     }
 }
 
@@ -492,8 +500,11 @@ enum ShrinkAction<D: Dimension> {
 /// `ValueTree` corresponding to `ArrayStrategy`.
 #[derive(Clone, Debug)]
 pub struct ArrayValueTree<A, D: Dimension> {
-    chunk: ChunkInfo<OwnedRepr<A>, D>,
-    current_subchunk: Option<D>,
+    all_trees: Array<A, D>,
+    borders_steps: BordersSteps<D>,
+    memory_order: MemoryOrder<D>,
+    parent_chunk: Option<ChunkInfo<D>>,
+    current_chunk: ChunkInfo<D>,
     // min_shape: D,
     /// Action to perform on next `simplify` call.
     next_action: Option<ShrinkAction<D>>,
@@ -505,12 +516,19 @@ impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
     /// Returns the number of dimensions of arrays produced by
     /// `self.current()`.
     pub fn ndim(&self) -> usize {
-        self.chunk.ndim()
+        self.current_chunk.ndim()
     }
 
     /// Returns the shape of `self.current()` (without actually calling `self.current()`).
     pub fn shape(&self) -> D {
-        self.chunk.shape()
+        self.current_chunk.shape()
+    }
+
+    pub fn view_with_hidden_mut(&mut self) -> ArrayViewMut<'_, A, D> {
+        let mut trees = self.all_trees.view_mut();
+        self.current_chunk
+            .slice_with_hidden(&mut trees, &self.borders_steps);
+        trees
     }
 }
 
@@ -518,22 +536,20 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     type Value = Array<A::Value, D>;
 
     fn current(&self) -> Array<A::Value, D> {
-        if let Some(subchunk_index) = self.current_subchunk {
-            self.chunk
-                .get_subchunk(subchunk_index)
-                .map_current(|elem| elem.current())
-        } else {
-            self.chunk.map_current(|elem| elem.current())
-        }
+        self.current_chunk.map(
+            &self.all_trees,
+            &self.borders_steps,
+            &self.memory_order,
+            |elem| elem.current(),
+        )
     }
 
     fn simplify(&mut self) -> bool {
         let ndim = self.ndim();
         if let Some(action) = self.next_action.take() {
-            self.next_action = action.next(&self.shape());
             match &action {
                 &ShrinkAction::RemoveBordersStep(axis) => {
-                    self.chunk.remove_borders_step(axis);
+                    self.borders_steps.remove_borders_step(axis);
                     self.next_action = {
                         let next_axis = Axis(axis.index() + 1);
                         if next_axis.index() < ndim {
@@ -544,7 +560,7 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
                     };
                 }
                 &ShrinkAction::ForbidInvertAxis(axis) => {
-                    self.chunk.forbid_invert(axis);
+                    self.memory_order.forbid_invert(axis);
                     self.next_action = {
                         let next_axis = Axis(axis.index() + 1);
                         if next_axis.index() < ndim {
@@ -555,30 +571,34 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
                     };
                 }
                 &ShrinkAction::SortAxes => {
-                    self.chunk.sort_axes();
+                    self.memory_order.sort_axes();
                     self.next_action = Some(ShrinkAction::SelectSubchunk(
-                        self.chunk.first_subchunk_index(),
+                        self.current_chunk.first_subchunk_index(),
                     ));
                 }
                 &ShrinkAction::SelectSubchunk(Some(ref subchunk_index)) => {
-                    if let Some(subchunk_index) = self.current_subchunk {
-                        self.chunk.narrow_to_subchunk(subchunk_index);
-                    }
-                    self.current_subchunk = Some(subchunk_index.clone());
+                    let subchunk = self.current_chunk.get_subchunk(subchunk_index.clone());
+                    let old_current_chunk = std::mem::replace(&mut self.current_chunk, subchunk);
+                    self.parent_chunk = Some(old_current_chunk);
                     self.next_action = Some(ShrinkAction::SelectSubchunk(
-                        self.chunk
-                            .get_subchunk(subchunk_index.clone())
-                            .first_subchunk_index(),
+                        self.current_chunk.first_subchunk_index(),
                     ));
                 }
                 &ShrinkAction::SelectSubchunk(None) => {
-                    self.next_action = Some(ShrinkAction::ShrinkElement(unimplemented!()));
+                    // FIXME: `first_index` is an undocumented method from `ndarray`.
+                    self.next_action = Some(ShrinkAction::ShrinkElement(
+                        self.current_chunk
+                            .shape_with_hidden(&self.borders_steps)
+                            .first_index(),
+                    ));
                 }
                 &ShrinkAction::ShrinkElement(Some(ref index)) => {
-                    self.chunk.view_all_current_mut()[index.clone()].simplify(); // TODO: subchunk?
-                                                                                 // FIXME: `next_for` is an undocumented method from `ndarray`.
-                    self.next_action =
-                        Some(ShrinkAction::ShrinkElement(shape.next_for(index.clone())));
+                    let mut trees_with_hidden = self.view_with_hidden_mut();
+                    trees_with_hidden[index.clone()].simplify();
+                    // FIXME: `next_for` is an undocumented method from `ndarray`.
+                    self.next_action = Some(ShrinkAction::ShrinkElement(
+                        trees_with_hidden.raw_dim().next_for(index.clone()),
+                    ));
                 }
                 &ShrinkAction::ShrinkElement(None) => {
                     self.next_action = None;
@@ -595,23 +615,25 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
         if let Some(action) = self.last_action.take() {
             match action {
                 ShrinkAction::RemoveBordersStep(axis) => {
-                    self.chunk.restore_borders_step(axis);
+                    self.borders_steps.restore_borders_step(axis);
                 }
                 ShrinkAction::ForbidInvertAxis(axis) => {
-                    self.chunk.allow_invert(axis);
+                    self.memory_order.allow_invert(axis);
                 }
                 ShrinkAction::SortAxes => {
-                    self.chunk.unsort_axes();
+                    self.memory_order.unsort_axes();
                 }
                 ShrinkAction::SelectSubchunk(Some(subchunk_index)) => {
-                    self.current_subchunk = None;
+                    let parent_chunk = self.parent_chunk.take();
+                    self.current_chunk = parent_chunk.unwrap();
                     self.next_action = Some(ShrinkAction::SelectSubchunk(
-                        self.chunk.next_subchunk_index(subchunk_index),
+                        self.current_chunk.next_subchunk_index(subchunk_index),
                     ));
                 }
                 ShrinkAction::SelectSubchunk(None) => {}
                 ShrinkAction::ShrinkElement(Some(index)) => {
-                    if self.all_current_trees_mut()[index.clone()].complicate() {
+                    let mut trees_with_hidden = self.view_with_hidden_mut();
+                    if trees_with_hidden[index.clone()].complicate() {
                         // `.complicate()` only attempts to *partially* undo the last
                         // simplification, so it may be possible to complicate this element further.
                         self.last_action = Some(ShrinkAction::ShrinkElement(Some(index)));
