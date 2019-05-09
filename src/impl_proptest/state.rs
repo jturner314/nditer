@@ -2,7 +2,10 @@ use crate::{axes_all, AxesFor, AxesMask, DimensionExt, IntoAxesFor};
 use ndarray::{
     Array, ArrayBase, ArrayView, Axis, Data, Dimension, IxDyn, RawData, ShapeBuilder, Slice,
 };
-use rand::{distributions::Uniform, Rng};
+use rand::{
+    distributions::{Distribution, Uniform},
+    Rng,
+};
 
 /// Applies `mapping` to `orig`, returning an array with memory layout matching
 /// `inverted` and `iter_order`.
@@ -20,14 +23,18 @@ where
     debug_assert_eq!(ndim, inverted.for_ndim());
     debug_assert_eq!(ndim, iter_order.for_ndim());
     let shape = orig.raw_dim();
-    let mut orig_permuted = orig.permuted_axes(iter_order.clone().into_inner());
-    inverted.indexed_visitv(|axis, inv| {
-        if inv {
-            orig_permuted.invert_axis(axis)
-        }
-    });
 
-    let new_flat: Vec<B> = orig_permuted.into_iter().map(mapping).collect();
+    let orig_inverted_permuted = {
+        let mut orig_inverted = orig;
+        inverted.indexed_visitv(|axis, inv| {
+            if inv {
+                orig_inverted.invert_axis(axis)
+            }
+        });
+        orig_inverted.permuted_axes(iter_order.clone().into_inner())
+    };
+
+    let new_flat: Vec<B> = orig_inverted_permuted.into_iter().map(mapping).collect();
     let mut new_strides = D::zeros(ndim);
     if !new_flat.is_empty() {
         let mut cum_prod: isize = 1;
@@ -149,7 +156,7 @@ impl<D: Dimension> ChunkInfo<D> {
                 let start = self.first_visible_index[ax] - borders_steps.base_lower_borders[ax];
                 let step = 1;
                 let end = self.first_visible_index[ax]
-                    + step * self.visible_shape[ax]
+                    + borders_steps.base_steps[ax] * self.visible_shape[ax]
                     + borders_steps.base_upper_borders[ax];
                 (start as isize, end as isize, step as isize)
             };
@@ -292,28 +299,6 @@ impl<D: Dimension> BordersSteps<D> {
         }
     }
 
-    pub fn gen_random<R: Rng>(
-        rng: &mut R,
-        ndim: usize,
-        max_lower_border: usize,
-        max_upper_border: usize,
-        max_step: usize,
-    ) -> BordersSteps<D> {
-        let mut lower_borders = D::zeros(ndim);
-        let mut upper_borders = D::zeros(ndim);
-        let mut steps = D::zeros(ndim);
-        let lower_border_distro = Uniform::new_inclusive(0, max_lower_border);
-        let upper_border_distro = Uniform::new_inclusive(0, max_upper_border);
-        // TODO: Strides of zero
-        let step_distro = Uniform::new_inclusive(1, max_step);
-        for ax in 0..ndim {
-            lower_borders[ax] = rng.sample(lower_border_distro);
-            upper_borders[ax] = rng.sample(upper_border_distro);
-            steps[ax] = rng.sample(step_distro);
-        }
-        BordersSteps::new(lower_borders, upper_borders, steps)
-    }
-
     /// Returns the `ndim` this `BordersSteps` is for.
     pub fn ndim(&self) -> usize {
         self.base_lower_borders.ndim()
@@ -383,25 +368,6 @@ impl<D: Dimension> MemoryOrder<D> {
         }
     }
 
-    pub fn gen_random<R: Rng>(
-        rng: &mut R,
-        ndim: usize,
-        invert_probability: f64,
-        permute_axes: bool,
-    ) -> MemoryOrder<D> {
-        let mut invert = AxesMask::all_false(ndim).into_dyn_num_true();
-        for ax in 0..ndim {
-            if rng.gen::<f64>() < invert_probability {
-                invert.write(Axis(ax), true);
-            }
-        }
-        let mut axis_order = axes_all().into_axes_for(ndim);
-        if permute_axes {
-            axis_order.shuffle(rng);
-        }
-        MemoryOrder::new(invert, axis_order)
-    }
-
     /// Returns the number of dimensions this `MemoryOrder` is for.
     pub fn ndim(&self) -> usize {
         self.base_invert.for_ndim()
@@ -429,5 +395,145 @@ impl<D: Dimension> MemoryOrder<D> {
     /// current chunk.
     pub fn unsort_axes(&mut self) {
         self.sort_axes = false;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BordersStepsConfig {
+    pub max_lower_border: usize,
+    pub max_upper_border: usize,
+    pub max_step: usize,
+}
+
+impl BordersStepsConfig {
+    /// Randomly generates a `BordersSteps` instance according to the config.
+    ///
+    /// **Panics** if `ndim` is inconsistent with `D`.
+    pub fn sample<D, R>(&self, ndim: usize, rng: &mut R) -> BordersSteps<D>
+    where
+        D: Dimension,
+        R: Rng + ?Sized,
+    {
+        const RANDOM_STEP_PROBABILITY: f64 = 0.5;
+
+        let mut lower_borders = D::zeros(ndim);
+        let mut upper_borders = D::zeros(ndim);
+        let mut steps = D::zeros(ndim);
+        let lower_border_distro = Uniform::new_inclusive(0, self.max_lower_border);
+        let upper_border_distro = Uniform::new_inclusive(0, self.max_upper_border);
+        // TODO: Strides of zero
+        let step_gt_one_distro = Uniform::new_inclusive(self.max_step.min(2), self.max_step);
+        for ax in 0..ndim {
+            lower_borders[ax] = lower_border_distro.sample(rng);
+            upper_borders[ax] = upper_border_distro.sample(rng);
+            steps[ax] = if rng.gen::<f64>() < RANDOM_STEP_PROBABILITY {
+                step_gt_one_distro.sample(rng)
+            } else {
+                1
+            };
+        }
+        BordersSteps::new(lower_borders, upper_borders, steps)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryOrderConfig {
+    pub invert_probability: f64,
+    pub permute_axes: bool,
+}
+
+impl MemoryOrderConfig {
+    /// Randomly generates a `MemoryOrder` instance according to the config.
+    ///
+    /// **Panics** if `ndim` is inconsistent with `D`.
+    pub fn sample<D, R>(&self, ndim: usize, rng: &mut R) -> MemoryOrder<D>
+    where
+        D: Dimension,
+        R: Rng + ?Sized,
+    {
+        let mut invert = AxesMask::all_false(ndim).into_dyn_num_true();
+        for ax in 0..ndim {
+            if rng.gen::<f64>() < self.invert_probability {
+                invert.write(Axis(ax), true);
+            }
+        }
+        let mut axis_order = axes_all().into_axes_for(ndim);
+        if self.permute_axes {
+            axis_order.shuffle(rng);
+        }
+        MemoryOrder::new(invert, axis_order)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_with_memory_order, BordersSteps, ChunkInfo, MemoryOrder};
+    use crate::{axes, AxesMask, IntoAxesFor};
+    use ndarray::prelude::*;
+
+    #[test]
+    fn example() {
+        let mut borders_steps = BordersSteps {
+            base_lower_borders: Ix3(19, 10, 14),
+            base_upper_borders: Ix3(17, 4, 3),
+            base_steps: Ix3(3, 2, 3),
+            remove_borders_steps: AxesMask::all_false(3).into_dyn_num_true(),
+        };
+        let memory_order = MemoryOrder {
+            base_invert: AxesMask::from(Ix3(1, 1, 0)),
+            allow_invert: AxesMask::from(Ix3(1, 1, 1)),
+            base_axis_order: axes((2, 1, 0)).into_axes_for(3),
+            sort_axes: false,
+        };
+        let chunk = ChunkInfo {
+            first_visible_index: Ix3(19, 10, 14),
+            visible_shape: Ix3(4, 7, 1),
+        };
+        let mut all_trees = Array3::zeros((19 + 3 * 4 + 17, 10 + 2 * 7 + 4, 14 + 3 * 1 + 3));
+        all_trees[(19, 10, 14)] = 1;
+
+        {
+            let owned = map_with_memory_order(
+                all_trees.view(),
+                &AxesMask::from(Ix3(1, 1, 0)),
+                &axes((2, 1, 0)).into_axes_for(3),
+                |&x| x,
+            );
+            assert_eq!(all_trees, owned);
+        }
+        {
+            let mut v = all_trees.view();
+            chunk.slice_with_hidden(&mut v, &borders_steps);
+            assert_eq!(v[(19, 10, 14)], 1);
+        }
+        {
+            let mut v = all_trees.view();
+            chunk.slice(&mut v, &borders_steps);
+            assert_eq!(v[(0, 0, 0)], 1);
+        }
+        {
+            let owned_with_hidden =
+                chunk.map_with_hidden(&all_trees, &borders_steps, &memory_order, |&x| x);
+            for (i, &elem) in owned_with_hidden.indexed_iter() {
+                if elem != 0 {
+                    println!("{:?}", i);
+                }
+            }
+            assert_eq!(owned_with_hidden[(19, 10, 14)], 1);
+        }
+        assert_eq!(
+            chunk.map(&all_trees, &borders_steps, &memory_order, |&x| x)[(0, 0, 0)],
+            1
+        );
+        for ax in 0..3 {
+            borders_steps.remove_borders_step(Axis(ax));
+            let mut v = all_trees.view();
+            chunk.slice(&mut v, &borders_steps);
+            assert_eq!(v[(0, 0, 0)], 1);
+            assert_eq!(
+                chunk.map(&all_trees, &borders_steps, &memory_order, |&x| x)[(0, 0, 0)],
+                1
+            );
+        }
     }
 }

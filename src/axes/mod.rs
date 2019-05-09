@@ -180,6 +180,19 @@ where
     }
 }
 
+impl<D> From<D> for AxesMask<D, IxDyn>
+where
+    D: Dimension,
+{
+    fn from(mut mask: D) -> AxesMask<D, IxDyn> {
+        mask.map_inplace(|m| *m = (*m != 0) as usize);
+        AxesMask {
+            mask,
+            num_true: PhantomData,
+        }
+    }
+}
+
 impl<'b, D, X1, X2> std::ops::BitAnd<&'b AxesMask<D, X2>> for AxesMask<D, X1>
 where
     D: Dimension,

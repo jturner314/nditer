@@ -1,6 +1,8 @@
 use crate::axes::{Axes, AxesExcept, AxesMask, IntoAxesFor};
 use crate::{DimensionExt, SubDim};
 use ndarray::{Axis, Dimension};
+#[cfg(test)]
+use rand::{seq::SliceRandom, Rng};
 use std::marker::PhantomData;
 use std::ops::Index;
 
@@ -133,6 +135,11 @@ where
     /// Swaps the axes at the given indices.
     pub fn swap(&mut self, a: usize, b: usize) {
         self.axes.0.slice_mut().swap(a, b)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shuffle<R: Rng + ?Sized>(&mut self, rng: &mut R) {
+        self.axes.0.slice_mut().shuffle(rng);
     }
 
     /// Rolls the axes at the given indices by the given shift.

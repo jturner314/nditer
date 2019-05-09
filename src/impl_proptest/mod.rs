@@ -1,21 +1,30 @@
-use self::state::{BordersSteps, ChunkInfo, MemoryOrder};
-use itertools::{izip, Itertools};
+use self::state::{BordersSteps, BordersStepsConfig, ChunkInfo, MemoryOrder, MemoryOrderConfig};
+use itertools::Itertools;
 use ndarray::{Array, ArrayViewMut, Axis, Dimension};
 use num_traits::ToPrimitive;
-use proptest::strategy::{NewTree, Strategy, ValueTree};
-use proptest::test_runner::TestRunner;
-use rand::{distributions, seq::SliceRandom, Rng};
-use std::marker::PhantomData;
-use std::ops::Range;
+use proptest::strategy::{Strategy, ValueTree};
+use proptest::test_runner::{Reason, TestRunner};
+use rand::{
+    distributions::{Distribution, Uniform},
+    seq::SliceRandom,
+    Rng,
+};
+use std::cmp;
+use std::convert::TryFrom;
+use std::ops::RangeInclusive;
+
+const MAX_ITER: usize = 1000;
+const MAX_DYN_NDIM: usize = 7;
 
 /// Randomly generates `n` numbers that have the given `sum`.
-fn gen_partition<R: Rng>(rng: &mut R, sum: f64, n: usize) -> impl Iterator<Item = f64> {
+fn gen_partition<R: Rng + ?Sized>(rng: &mut R, sum: f64, n: usize) -> impl Iterator<Item = f64> {
     let mut splits: Vec<f64> = vec![0.];
-    splits.extend(
-        rng.sample_iter::<f64, _>(&distributions::Uniform::new_inclusive(0., sum))
-            .take(n - 1),
-    );
+    let distro = Uniform::new_inclusive(0., sum);
+    for _ in 0..n - 1 {
+        splits.push(distro.sample(rng));
+    }
     splits.push(sum);
+
     splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
     splits
         .into_iter()
@@ -30,21 +39,22 @@ fn gen_partition<R: Rng>(rng: &mut R, sum: f64, n: usize) -> impl Iterator<Item 
 /// factors on average.
 ///
 /// **Panics** if `size_range.start >= size_range.end || size_range.end > isize::MAX as usize`.
-fn gen_shape<D, R>(rng: &mut R, mut size_range: Range<usize>) -> D
+fn gen_shape<D, R>(rng: &mut R, size_range: RangeInclusive<usize>) -> Result<D, Reason>
 where
     D: Dimension,
-    R: Rng,
+    R: Rng + ?Sized,
 {
-    assert!(size_range.start < size_range.end);
-    assert!(size_range.end <= std::isize::MAX as usize);
+    let (mut min_size, max_size) = size_range.into_inner();
+    assert!(min_size <= max_size);
+    assert!(max_size <= std::isize::MAX as usize);
 
-    let ndim = D::NDIM.unwrap_or_else(|| rng.gen_range(0, 8));
+    let ndim = D::NDIM.unwrap_or_else(|| rng.gen_range(0, MAX_DYN_NDIM));
     if ndim == 0 {
-        return D::zeros(0);
+        return Ok(D::zeros(0));
     }
     let mut shape = D::zeros(ndim);
 
-    if size_range.start == 0 {
+    if min_size == 0 {
         // The 0.02 threshold is chosen such that there is <1% probability of
         // generating 256 cases (default number for proptest) for which none
         // meet this condition, and such that the expected number of times this
@@ -52,34 +62,124 @@ where
         if rng.gen::<f64>() < 0.02 {
             // Fill all but first element (since at least one axis length must
             // be zero).
-            izip!(
-                &mut shape.slice_mut()[1..],
-                rng.sample_iter(&distributions::Uniform::new(0, size_range.end)),
-            )
-            .for_each(|(s, axis_len)| *s = axis_len);
+            let size_distro = Uniform::new_inclusive(min_size, max_size);
+            shape.slice_mut()[1..]
+                .iter_mut()
+                .for_each(|axis_len| *axis_len = size_distro.sample(rng));
             // Shuffle to move the zero axis length to a random position.
             shape.slice_mut().shuffle(rng);
-            return shape;
+            return Ok(shape);
         }
-        size_range.start = 1;
+        min_size = 1;
     }
-    debug_assert!(size_range.start >= 1);
+    debug_assert!(min_size >= 1);
 
-    loop {
-        let mut remaining_size = rng.gen_range(size_range.start, size_range.end);
-        for (i, ln_axis_len) in
-            gen_partition(rng, remaining_size.to_f64().unwrap().ln(), ndim - 1).enumerate()
+    for _ in 0..MAX_ITER {
+        let mut remaining_size = Uniform::new_inclusive(min_size, max_size).sample(rng);
+        for (i, ln_axis_len) in gen_partition(rng, remaining_size.to_f64().unwrap().ln(), ndim)
+            .take(ndim - 1)
+            .enumerate()
         {
-            let axis_len = ln_axis_len.exp().round().to_usize().unwrap();
+            // This `cmp::min` is necessary due to numerical issues.
+            let axis_len = cmp::min(
+                remaining_size,
+                ln_axis_len.exp().round().to_usize().unwrap(),
+            );
             shape[i] = axis_len;
             remaining_size /= axis_len;
         }
         shape[ndim - 1] = remaining_size;
 
         // This can fail due to axis lengths not dividing evenly into the size.
-        if shape.size() >= size_range.start {
-            return shape;
+        if shape.size() >= min_size {
+            return Ok(shape);
         }
+    }
+    Err(Reason::from(format!(
+        "Exceeded {} iterations while trying to generate a shape",
+        MAX_ITER,
+    )))
+}
+
+// TODO: Add axis length limits.
+#[derive(Clone, Debug)]
+enum ShapeConfig<D> {
+    Fixed { shape: D },
+    Rectangular { visible_size: RangeInclusive<usize> },
+    Square { visible_size: RangeInclusive<usize> },
+}
+
+impl<D: Dimension> ShapeConfig<D> {
+    fn visible_size(&self) -> RangeInclusive<usize> {
+        match self {
+            ShapeConfig::Fixed { shape } => {
+                let size = shape.size();
+                size..=size
+            }
+            ShapeConfig::Rectangular { visible_size } => visible_size.clone(),
+            ShapeConfig::Square { visible_size } => visible_size.clone(),
+        }
+    }
+}
+
+impl<D: Dimension> Distribution<Result<D, Reason>> for ShapeConfig<D> {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<D, Reason> {
+        match self {
+            ShapeConfig::Fixed { shape } => Ok(shape.clone()),
+            ShapeConfig::Rectangular { visible_size } => gen_shape(rng, visible_size.clone()),
+            ShapeConfig::Square { visible_size } => unimplemented!(),
+        }
+    }
+}
+
+impl<D: Dimension> Default for ShapeConfig<D> {
+    fn default() -> ShapeConfig<D> {
+        let ndim = D::NDIM.unwrap_or(MAX_DYN_NDIM);
+        ShapeConfig::Rectangular {
+            visible_size: 0..=8usize.pow(u32::try_from(ndim).unwrap()).max(10000),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ArrayStrategyConfig<D> {
+    shape: ShapeConfig<D>,
+    borders_steps: BordersStepsConfig,
+    memory_order: MemoryOrderConfig,
+    max_size_with_hidden: usize,
+}
+
+impl<D: Dimension> Default for ArrayStrategyConfig<D> {
+    fn default() -> ArrayStrategyConfig<D> {
+        let shape = ShapeConfig::default();
+        ArrayStrategyConfig {
+            borders_steps: BordersStepsConfig {
+                max_lower_border: 20,
+                max_upper_border: 20,
+                max_step: 4,
+            },
+            memory_order: MemoryOrderConfig {
+                invert_probability: 0.5,
+                permute_axes: true,
+            },
+            max_size_with_hidden: 4 * shape.visible_size().end(),
+            shape,
+        }
+    }
+}
+
+impl<D: Dimension> Distribution<Result<(D, BordersSteps<D>, MemoryOrder<D>), Reason>>
+    for ArrayStrategyConfig<D>
+{
+    fn sample<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Result<(D, BordersSteps<D>, MemoryOrder<D>), Reason> {
+        let visible_shape = self.shape.sample(rng)?;
+        let ndim = visible_shape.ndim();
+        let borders_steps = self.borders_steps.sample(ndim, rng);
+        let memory_order = self.memory_order.sample(ndim, rng);
+        Ok((visible_shape, borders_steps, memory_order))
     }
 }
 
@@ -87,34 +187,19 @@ where
 #[derive(Clone, Debug)]
 pub struct ArrayStrategy<T, D> {
     pub elem: T,
-    // TODO: Change this to size_with_hidden
-    pub visible_size: Range<usize>,
-    pub max_step: usize,
-    pub max_lower_border: usize,
-    pub max_upper_border: usize,
-    pub invert_probability: f64,
-    pub permute_axes: bool,
-    pub dim_type: PhantomData<D>,
+    pub config: ArrayStrategyConfig<D>,
 }
 
-impl<T, D> ArrayStrategy<T, D> {
-    pub fn default_with_elem(elem: T) -> ArrayStrategy<T, D> {
-        ArrayStrategy {
-            elem,
-            visible_size: 0..1000,
-            max_step: 4,
-            max_lower_border: 20,
-            max_upper_border: 20,
-            invert_probability: 0.5,
-            permute_axes: true,
-            dim_type: PhantomData,
-        }
-    }
-}
-
-impl<T: Default, D> Default for ArrayStrategy<T, D> {
+impl<T, D> Default for ArrayStrategy<T, D>
+where
+    T: Default,
+    D: Dimension,
+{
     fn default() -> ArrayStrategy<T, D> {
-        ArrayStrategy::default_with_elem(T::default())
+        ArrayStrategy {
+            elem: T::default(),
+            config: ArrayStrategyConfig::default(),
+        }
     }
 }
 
@@ -126,29 +211,41 @@ where
     type Tree = ArrayValueTree<T::Tree, D>;
     type Value = Array<T::Value, D>;
 
-    fn new_tree(&self, runner: &mut TestRunner) -> NewTree<Self> {
-        let visible_shape: D = gen_shape(runner.rng(), self.visible_size.clone());
-        let ndim = visible_shape.ndim();
-        let borders_steps = BordersSteps::gen_random(
-            runner.rng(),
-            ndim,
-            self.max_lower_border,
-            self.max_upper_border,
-            self.max_step,
-        );
-        let memory_order = MemoryOrder::gen_random(
-            runner.rng(),
-            ndim,
-            self.invert_probability,
-            self.permute_axes,
-        );
-        ArrayValueTree::new(
-            &self.elem,
-            runner,
-            visible_shape,
-            borders_steps,
-            memory_order,
-        )
+    fn new_tree(&self, runner: &mut TestRunner) -> Result<ArrayValueTree<T::Tree, D>, Reason> {
+        for _ in 0..MAX_ITER {
+            let (visible_shape, borders_steps, memory_order) = self.config.sample(runner.rng())?;
+            let ndim = visible_shape.ndim();
+            let current_chunk = ChunkInfo::first_chunk(visible_shape, &borders_steps);
+            let shape_all = current_chunk.shape_with_hidden(&borders_steps);
+            let size_all = shape_all.size();
+            if size_all <= self.config.max_size_with_hidden {
+                let all_trees = Array::from_shape_vec(
+                    shape_all,
+                    std::iter::repeat_with(|| self.elem.new_tree(runner))
+                        .take(size_all)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+                .unwrap();
+                let next_action = Some(if ndim == 0 {
+                    ShrinkAction::ShrinkElement(Some(D::zeros(ndim)))
+                } else {
+                    ShrinkAction::RemoveBordersStep(Axis(0))
+                });
+                return Ok(ArrayValueTree {
+                    all_trees,
+                    borders_steps,
+                    memory_order,
+                    parent_chunk: None,
+                    current_chunk,
+                    next_action,
+                    last_action: None,
+                });
+            }
+        }
+        Err(Reason::from(format!(
+            "Exceeded {} iterations while trying to generate a shape and layout",
+            MAX_ITER,
+        )))
     }
 }
 
@@ -181,45 +278,6 @@ pub struct ArrayValueTree<A, D: Dimension> {
 }
 
 impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
-    pub fn new<T>(
-        elem_strategy: &T,
-        runner: &mut TestRunner,
-        visible_shape: D,
-        borders_steps: BordersSteps<D>,
-        memory_order: MemoryOrder<D>,
-    ) -> Result<ArrayValueTree<A, D>, proptest::test_runner::Reason>
-    where
-        T: Strategy<Tree = A, Value = A::Value>,
-    {
-        let ndim = visible_shape.ndim();
-        assert_eq!(ndim, borders_steps.ndim());
-        assert_eq!(ndim, memory_order.ndim());
-        let current_chunk = ChunkInfo::first_chunk(visible_shape, &borders_steps);
-        let shape_all = current_chunk.shape_with_hidden(&borders_steps);
-        let size_all = shape_all.size();
-        let all_trees = Array::from_shape_vec(
-            shape_all,
-            std::iter::repeat_with(|| elem_strategy.new_tree(runner))
-                .take(size_all)
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-        .unwrap();
-        let next_action = Some(if ndim == 0 {
-            ShrinkAction::ShrinkElement(Some(D::zeros(ndim)))
-        } else {
-            ShrinkAction::RemoveBordersStep(Axis(0))
-        });
-        Ok(ArrayValueTree {
-            all_trees,
-            borders_steps,
-            memory_order,
-            parent_chunk: None,
-            current_chunk,
-            next_action,
-            last_action: None,
-        })
-    }
-
     /// Returns the number of dimensions of arrays produced by
     /// `self.current()`.
     pub fn ndim(&self) -> usize {
@@ -359,14 +417,14 @@ mod state;
 
 #[cfg(test)]
 mod tests {
-    use super::ArrayStrategy;
+    use super::{ArrayStrategy, ArrayStrategyConfig};
     use ndarray::prelude::*;
     use proptest::prelude::*;
 
     proptest! {
         #[test]
-        fn example(arr in ArrayStrategy::<_, Ix3>::default_with_elem(0..10)) {
-            prop_assert_ne!(arr.sum() % 3, 5);
+        fn example(arr in ArrayStrategy { elem: 0..10, config: ArrayStrategyConfig::<Ix3>::default() }) {
+            prop_assert_ne!(arr.sum() % 5, 4);
         }
     }
 }
