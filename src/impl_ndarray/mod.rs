@@ -1,10 +1,7 @@
-use crate::{
-    axes, CanMerge, IntoNdProducer, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat,
-    SubDim,
-};
+use crate::{CanMerge, IntoNdProducer, NdAccess, NdProducer, NdReshape, NdSource, NdSourceRepeat};
 use itertools::izip;
 use ndarray::prelude::*;
-use ndarray::{Data, DataMut, RawData, RawDataClone, RawDataMut, RawViewRepr, Slice, ViewRepr};
+use ndarray::{Data, DataMut, RawData, RawDataClone, RawDataMut, RawViewRepr, ViewRepr};
 use std::marker::PhantomData;
 
 /// Extension trait for `ndarray::ArrayBase`.
@@ -35,41 +32,6 @@ where
     fn raw_producer_mut(&mut self) -> ArrayBaseProducer<RawViewRepr<*mut A>, D>
     where
         S: RawDataMut;
-
-    /// Iterates over pairs of consecutive elements along the axis.
-    ///
-    /// The first argument to the closure is an element, and the second
-    /// argument is the next element along the axis. Iteration is guaranteed to
-    /// proceed in order along the specified axis, but in all other respects
-    /// the iteration order is unspecified.
-    ///
-    /// # Example
-    ///
-    /// For example, this can be used to compute the cumulative sum along an
-    /// axis:
-    ///
-    /// ```
-    /// use ndarray::{array, Axis};
-    /// use nditer::ArrayBaseExt;
-    ///
-    /// let mut arr = array![
-    ///     [[1, 2], [3, 4], [5, 6]],
-    ///     [[7, 8], [9, 10], [11, 12]],
-    /// ];
-    /// arr.accumulate_axis_inplace(Axis(1), |&prev, curr| *curr += prev);
-    /// assert_eq!(
-    ///     arr,
-    ///     array![
-    ///         [[1, 2], [4, 6], [9, 12]],
-    ///         [[7, 8], [16, 18], [27, 30]],
-    ///     ],
-    /// );
-    /// ```
-    fn accumulate_axis_inplace<F>(&mut self, axis: Axis, f: F)
-    where
-        F: FnMut(&A, &mut A),
-        S: DataMut,
-        D: SubDim<Ix1>;
 }
 
 impl<A, S, D> ArrayBaseExt<A, S, D> for ArrayBase<S, D>
@@ -106,37 +68,6 @@ where
         ArrayBaseProducer {
             arr: self.raw_view_mut(),
         }
-    }
-
-    fn accumulate_axis_inplace<F>(&mut self, axis: Axis, mut f: F)
-    where
-        F: FnMut(&A, &mut A),
-        S: DataMut,
-        D: SubDim<Ix1>,
-    {
-        if self.len_of(axis) <= 1 {
-            return;
-        }
-        let mut prev = self.raw_view();
-        prev.slice_axis_inplace(axis, Slice::from(..-1));
-        let mut curr = self.raw_view_mut();
-        curr.slice_axis_inplace(axis, Slice::from(1..));
-        prev.into_producer()
-            .zip(curr)
-            .force_axes_ordered(axes(axis.index()))
-            .for_each(|(prev, curr)| unsafe {
-                // These pointer dereferences and borrows are safe because:
-                //
-                // 1. They're pointers to elements in the array.
-                //
-                // 2. `S: DataMut` guarantees that elements are safe to borrow
-                //    mutably and that they don't alias.
-                //
-                // 3. The lifetimes of the borrows last only for the duration
-                //    of the call to `f`, so aliasing across calls to `f`
-                //    cannot occur.
-                f(&*prev, &mut *curr)
-            });
     }
 }
 
