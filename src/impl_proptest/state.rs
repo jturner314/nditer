@@ -94,6 +94,10 @@ impl<D: Dimension> ChunkInfo<D> {
         self.visible_shape.ndim()
     }
 
+    pub fn len(&self) -> usize {
+        self.visible_shape.size()
+    }
+
     pub fn shape(&self) -> D {
         self.visible_shape.clone()
     }
@@ -181,13 +185,16 @@ impl<D: Dimension> ChunkInfo<D> {
         for ax in 0..self.ndim() {
             let axis = Axis(ax);
             if !borders_steps.remove_borders_steps.read(axis) {
+                let start = borders_steps.base_lower_borders[ax];
+                let step = borders_steps.base_steps[ax];
+                let end = start + step * self.visible_shape[ax];
+                dbg!(axis);
+                dbg!(with_hidden.shape());
+                dbg!(with_hidden.strides());
+                dbg!((start, end, step));
                 with_hidden.slice_axis_inplace(
                     axis,
-                    Slice {
-                        start: borders_steps.base_lower_borders[ax] as isize,
-                        end: Some(-(borders_steps.base_upper_borders[ax] as isize)),
-                        step: borders_steps.base_steps[ax] as isize,
-                    },
+                    Slice::new(start as isize, Some(end as isize), step as isize),
                 );
             }
         }
@@ -279,7 +286,7 @@ impl<D: Dimension> ChunkInfo<D> {
                 _ => panic!("Index out of bounds for axis {}", ax),
             };
         });
-        visible_shape.map_inplace(|len| *len = *len / 2 + (*len % 2 != 0) as usize);
+        visible_shape.map_inplace(|len| *len = *len / 2 + *len % 2);
     }
 }
 
@@ -414,7 +421,7 @@ impl BordersStepsConfig {
         D: Dimension,
         R: Rng + ?Sized,
     {
-        const RANDOM_STEP_PROBABILITY: f64 = 0.5;
+        const RANDOM_STEP_PROBABILITY: f64 = 0.2;
 
         let mut lower_borders = D::zeros(ndim);
         let mut upper_borders = D::zeros(ndim);

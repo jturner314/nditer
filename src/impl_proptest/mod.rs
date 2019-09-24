@@ -1,181 +1,114 @@
+pub use self::shape::{AnyShape, FixedShape};
+
 use self::state::{BordersSteps, BordersStepsConfig, ChunkInfo, MemoryOrder, MemoryOrderConfig};
-use itertools::Itertools;
+use itertools::izip;
 use ndarray::{Array, ArrayViewMut, Axis, Dimension};
-use num_traits::ToPrimitive;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Reason, TestRunner};
-use rand::{
-    distributions::{Distribution, Uniform},
-    seq::SliceRandom,
-    Rng,
-};
+use rand::{distributions::Distribution, Rng};
 use std::cmp;
-use std::convert::TryFrom;
+use std::fmt::Debug;
 use std::ops::RangeInclusive;
 
 const MAX_ITER: usize = 1000;
-const MAX_DYN_NDIM: usize = 7;
 
-/// Randomly generates `n` numbers that have the given `sum`.
-fn gen_partition<R: Rng + ?Sized>(rng: &mut R, sum: f64, n: usize) -> impl Iterator<Item = f64> {
-    let mut splits: Vec<f64> = vec![0.];
-    let distro = Uniform::new_inclusive(0., sum);
-    for _ in 0..n - 1 {
-        splits.push(distro.sample(rng));
-    }
-    splits.push(sum);
-
-    splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    splits
-        .into_iter()
-        .tuple_windows()
-        .map(|(left, right)| right - left)
-}
-
-/// Randomly generates a shape with size in the given range.
+/// A strategy for generating shapes.
 ///
-/// This implementation will take a very long time on average if there are few
-/// sizes within `size_range` or if the sizes within `size_range` have few
-/// factors on average.
-///
-/// **Panics** if `size_range.start >= size_range.end || size_range.end > isize::MAX as usize`.
-fn gen_shape<D, R>(rng: &mut R, size_range: RangeInclusive<usize>) -> Result<D, Reason>
-where
-    D: Dimension,
-    R: Rng + ?Sized,
-{
-    let (mut min_size, max_size) = size_range.into_inner();
-    assert!(min_size <= max_size);
-    assert!(max_size <= std::isize::MAX as usize);
+/// This is used to control the behavior of shape reduction in `ArrayStrategy`.
+pub trait ShapeRange {
+    type Dim: Dimension;
 
-    let ndim = D::NDIM.unwrap_or_else(|| rng.gen_range(0, MAX_DYN_NDIM));
-    if ndim == 0 {
-        return Ok(D::zeros(0));
-    }
-    let mut shape = D::zeros(ndim);
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<Self::Dim, Reason>;
 
-    if min_size == 0 {
-        // The 0.02 threshold is chosen such that there is <1% probability of
-        // generating 256 cases (default number for proptest) for which none
-        // meet this condition, and such that the expected number of times this
-        // condition is met out of 256 cases is about 5.
-        if rng.gen::<f64>() < 0.02 {
-            // Fill all but first element (since at least one axis length must
-            // be zero).
-            let size_distro = Uniform::new_inclusive(min_size, max_size);
-            shape.slice_mut()[1..]
-                .iter_mut()
-                .for_each(|axis_len| *axis_len = size_distro.sample(rng));
-            // Shuffle to move the zero axis length to a random position.
-            shape.slice_mut().shuffle(rng);
-            return Ok(shape);
-        }
-        min_size = 1;
-    }
-    debug_assert!(min_size >= 1);
+    /// Returns the minimum shape size.
+    fn min_size(&self) -> usize;
 
-    for _ in 0..MAX_ITER {
-        let mut remaining_size = Uniform::new_inclusive(min_size, max_size).sample(rng);
-        for (i, ln_axis_len) in gen_partition(rng, remaining_size.to_f64().unwrap().ln(), ndim)
-            .take(ndim - 1)
-            .enumerate()
-        {
-            // This `cmp::min` is necessary due to numerical issues.
-            let axis_len = cmp::min(
-                remaining_size,
-                ln_axis_len.exp().round().to_usize().unwrap(),
-            );
-            shape[i] = axis_len;
-            remaining_size /= axis_len;
-        }
-        shape[ndim - 1] = remaining_size;
+    fn max_size(&self) -> usize;
 
-        // This can fail due to axis lengths not dividing evenly into the size.
-        if shape.size() >= min_size {
-            return Ok(shape);
-        }
-    }
-    Err(Reason::from(format!(
-        "Exceeded {} iterations while trying to generate a shape",
-        MAX_ITER,
-    )))
-}
+    fn min_shape(&self) -> Option<Self::Dim>;
 
-// TODO: Add axis length limits.
-#[derive(Clone, Debug)]
-enum ShapeConfig<D> {
-    Fixed { shape: D },
-    Rectangular { visible_size: RangeInclusive<usize> },
-    Square { visible_size: RangeInclusive<usize> },
-}
-
-impl<D: Dimension> ShapeConfig<D> {
-    fn visible_size(&self) -> RangeInclusive<usize> {
-        match self {
-            ShapeConfig::Fixed { shape } => {
-                let size = shape.size();
-                size..=size
-            }
-            ShapeConfig::Rectangular { visible_size } => visible_size.clone(),
-            ShapeConfig::Square { visible_size } => visible_size.clone(),
-        }
-    }
-}
-
-impl<D: Dimension> Distribution<Result<D, Reason>> for ShapeConfig<D> {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<D, Reason> {
-        match self {
-            ShapeConfig::Fixed { shape } => Ok(shape.clone()),
-            ShapeConfig::Rectangular { visible_size } => gen_shape(rng, visible_size.clone()),
-            ShapeConfig::Square { visible_size } => unimplemented!(),
-        }
-    }
-}
-
-impl<D: Dimension> Default for ShapeConfig<D> {
-    fn default() -> ShapeConfig<D> {
-        let ndim = D::NDIM.unwrap_or(MAX_DYN_NDIM);
-        ShapeConfig::Rectangular {
-            visible_size: 0..=8usize.pow(u32::try_from(ndim).unwrap()).max(10000),
-        }
-    }
+    fn max_shape(&self) -> Option<Self::Dim>;
 }
 
 #[derive(Clone, Debug)]
-pub struct ArrayStrategyConfig<D> {
-    shape: ShapeConfig<D>,
+pub struct ArrayStrategyConfig<T> {
+    shape: T,
     borders_steps: BordersStepsConfig,
     memory_order: MemoryOrderConfig,
     max_size_with_hidden: usize,
 }
 
-impl<D: Dimension> Default for ArrayStrategyConfig<D> {
-    fn default() -> ArrayStrategyConfig<D> {
-        let shape = ShapeConfig::default();
+impl<T: ShapeRange> ArrayStrategyConfig<T> {
+    pub fn new(
+        shape: T,
+        borders_steps: BordersStepsConfig,
+        memory_order: MemoryOrderConfig,
+        max_size_with_hidden: usize,
+    ) -> Self {
         ArrayStrategyConfig {
+            shape,
+            borders_steps,
+            memory_order,
+            max_size_with_hidden,
+        }
+    }
+
+    pub fn from_shape(shape: T) -> Self {
+        let max_size_with_hidden = cmp::max(
+            10000,
+            10 * cmp::max(
+                shape.max_size(),
+                shape.max_shape().map(|shape| shape.size()).unwrap_or(0),
+            ),
+        );
+        ArrayStrategyConfig {
+            shape,
             borders_steps: BordersStepsConfig {
-                max_lower_border: 20,
-                max_upper_border: 20,
+                max_lower_border: 10,
+                max_upper_border: 10,
                 max_step: 4,
             },
             memory_order: MemoryOrderConfig {
                 invert_probability: 0.5,
                 permute_axes: true,
             },
-            max_size_with_hidden: 4 * shape.visible_size().end(),
+            max_size_with_hidden,
+        }
+    }
+}
+
+impl<T> Default for ArrayStrategyConfig<T>
+where
+    T: Default + ShapeRange,
+{
+    fn default() -> ArrayStrategyConfig<T> {
+        let shape = T::default();
+        ArrayStrategyConfig {
+            borders_steps: BordersStepsConfig {
+                max_lower_border: 10,
+                max_upper_border: 10,
+                max_step: 4,
+            },
+            memory_order: MemoryOrderConfig {
+                invert_probability: 0.5,
+                permute_axes: true,
+            },
+            max_size_with_hidden: 10000,
             shape,
         }
     }
 }
 
-impl<D: Dimension> Distribution<Result<(D, BordersSteps<D>, MemoryOrder<D>), Reason>>
-    for ArrayStrategyConfig<D>
+impl<T> Distribution<Result<(T::Dim, BordersSteps<T::Dim>, MemoryOrder<T::Dim>), Reason>>
+    for ArrayStrategyConfig<T>
+where
+    T: ShapeRange,
 {
     fn sample<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-    ) -> Result<(D, BordersSteps<D>, MemoryOrder<D>), Reason> {
-        let visible_shape = self.shape.sample(rng)?;
+    ) -> Result<(T::Dim, BordersSteps<T::Dim>, MemoryOrder<T::Dim>), Reason> {
+        let visible_shape = dbg!(self.shape.sample(rng)?);
         let ndim = visible_shape.ndim();
         let borders_steps = self.borders_steps.sample(ndim, rng);
         let memory_order = self.memory_order.sample(ndim, rng);
@@ -185,17 +118,17 @@ impl<D: Dimension> Distribution<Result<(D, BordersSteps<D>, MemoryOrder<D>), Rea
 
 // TODO: How to generate arrays with stride 0?
 #[derive(Clone, Debug)]
-pub struct ArrayStrategy<T, D> {
+pub struct ArrayStrategy<T, U> {
     pub elem: T,
-    pub config: ArrayStrategyConfig<D>,
+    pub config: ArrayStrategyConfig<U>,
 }
 
-impl<T, D> Default for ArrayStrategy<T, D>
+impl<T, U> Default for ArrayStrategy<T, U>
 where
     T: Default,
-    D: Dimension,
+    U: Default + ShapeRange,
 {
-    fn default() -> ArrayStrategy<T, D> {
+    fn default() -> ArrayStrategy<T, U> {
         ArrayStrategy {
             elem: T::default(),
             config: ArrayStrategyConfig::default(),
@@ -203,21 +136,38 @@ where
     }
 }
 
-impl<T, D> Strategy for ArrayStrategy<T, D>
+impl<T, U> Strategy for ArrayStrategy<T, U>
 where
     T: Strategy,
-    D: Dimension,
+    U: Debug + ShapeRange,
 {
-    type Tree = ArrayValueTree<T::Tree, D>;
-    type Value = Array<T::Value, D>;
+    type Tree = ArrayValueTree<T::Tree, U::Dim>;
+    type Value = Array<T::Value, U::Dim>;
 
-    fn new_tree(&self, runner: &mut TestRunner) -> Result<ArrayValueTree<T::Tree, D>, Reason> {
+    fn new_tree(&self, runner: &mut TestRunner) -> Result<ArrayValueTree<T::Tree, U::Dim>, Reason> {
         for _ in 0..MAX_ITER {
             let (visible_shape, borders_steps, memory_order) = self.config.sample(runner.rng())?;
             let ndim = visible_shape.ndim();
-            let current_chunk = ChunkInfo::first_chunk(visible_shape, &borders_steps);
-            let shape_all = current_chunk.shape_with_hidden(&borders_steps);
-            let size_all = shape_all.size();
+            let min_visible_size = self.config.shape.min_size();
+            let min_visible_shape = self
+                .config
+                .shape
+                .min_shape()
+                .unwrap_or_else(|| U::Dim::zeros(ndim));
+
+            // Sanity checks for `visible_shape`.
+            debug_assert!(visible_shape.size() >= min_visible_size);
+            debug_assert!(visible_shape.size() <= self.config.shape.max_size());
+            debug_assert!(izip!(visible_shape.slice(), min_visible_shape.slice())
+                .all(|(&axis_len, &min_axis_len)| axis_len >= min_axis_len));
+            if let Some(max_shape) = self.config.shape.max_shape() {
+                debug_assert!(izip!(visible_shape.slice(), max_shape.slice())
+                    .all(|(&axis_len, &max_axis_len)| axis_len <= max_axis_len));
+            }
+
+            let current_chunk = ChunkInfo::first_chunk(dbg!(visible_shape), &borders_steps);
+            let shape_all = dbg!(current_chunk.shape_with_hidden(&borders_steps));
+            let size_all = dbg!(shape_all.size());
             if size_all <= self.config.max_size_with_hidden {
                 let all_trees = Array::from_shape_vec(
                     shape_all,
@@ -227,7 +177,7 @@ where
                 )
                 .unwrap();
                 let next_action = Some(if ndim == 0 {
-                    ShrinkAction::ShrinkElement(Some(D::zeros(ndim)))
+                    ShrinkAction::ShrinkElement(Some(U::Dim::zeros(ndim)))
                 } else {
                     ShrinkAction::RemoveBordersStep(Axis(0))
                 });
@@ -237,6 +187,8 @@ where
                     memory_order,
                     parent_chunk: None,
                     current_chunk,
+                    min_visible_size,
+                    min_visible_shape,
                     next_action,
                     last_action: None,
                 });
@@ -270,7 +222,8 @@ pub struct ArrayValueTree<A, D: Dimension> {
     memory_order: MemoryOrder<D>,
     parent_chunk: Option<ChunkInfo<D>>,
     current_chunk: ChunkInfo<D>,
-    // min_shape: D,
+    min_visible_size: usize,
+    min_visible_shape: D,
     /// Action to perform on next `simplify` call.
     next_action: Option<ShrinkAction<D>>,
     /// Action performed on most recent `simplify` call.
@@ -295,6 +248,13 @@ impl<A: ValueTree, D: Dimension> ArrayValueTree<A, D> {
             .slice_with_hidden(&mut trees, &self.borders_steps);
         trees
     }
+
+    fn is_shape_within_bounds(&self, shape: &D) -> bool {
+        let size = shape.size();
+        size >= self.min_visible_size
+            && izip!(shape.slice(), self.min_visible_shape.slice())
+                .all(|(&axis_len, &min_axis_len)| axis_len >= min_axis_len)
+    }
 }
 
 impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
@@ -312,6 +272,7 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     fn simplify(&mut self) -> bool {
         let ndim = self.ndim();
         if let Some(action) = self.next_action.take() {
+            dbg!(&action);
             match &action {
                 &ShrinkAction::RemoveBordersStep(axis) => {
                     self.borders_steps.remove_borders_step(axis);
@@ -343,11 +304,20 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
                 }
                 &ShrinkAction::SelectSubchunk(Some(ref subchunk_index)) => {
                     let subchunk = self.current_chunk.get_subchunk(subchunk_index.clone());
-                    let old_current_chunk = std::mem::replace(&mut self.current_chunk, subchunk);
-                    self.parent_chunk = Some(old_current_chunk);
-                    self.next_action = Some(ShrinkAction::SelectSubchunk(
-                        self.current_chunk.first_subchunk_index(),
-                    ));
+                    if self.is_shape_within_bounds(&subchunk.shape()) {
+                        let old_current_chunk =
+                            std::mem::replace(&mut self.current_chunk, subchunk);
+                        self.parent_chunk = Some(old_current_chunk);
+                        self.next_action = Some(ShrinkAction::SelectSubchunk(
+                            self.current_chunk.first_subchunk_index(),
+                        ));
+                    } else {
+                        self.next_action = Some(ShrinkAction::ShrinkElement(
+                            self.current_chunk
+                                .shape_with_hidden(&self.borders_steps)
+                                .first_index(),
+                        ));
+                    }
                 }
                 &ShrinkAction::SelectSubchunk(None) => {
                     // FIXME: `first_index` is an undocumented method from `ndarray`.
@@ -413,17 +383,42 @@ impl<A: ValueTree, D: Dimension> ValueTree for ArrayValueTree<A, D> {
     }
 }
 
+mod random;
+mod shape;
 mod state;
 
 #[cfg(test)]
 mod tests {
-    use super::{ArrayStrategy, ArrayStrategyConfig};
+    use super::{AnyShape, ArrayStrategy, ArrayStrategyConfig, FixedShape};
     use ndarray::prelude::*;
     use proptest::prelude::*;
 
     proptest! {
         #[test]
-        fn example(arr in ArrayStrategy { elem: 0..10, config: ArrayStrategyConfig::<Ix3>::default() }) {
+        fn example2(
+            (arr1, arr2) in AnyShape::<Ix3>::default()
+                .prop_flat_map(|shape| {
+                    (
+                        dbg!(ArrayStrategy {
+                            elem: 0..10,
+                            config: ArrayStrategyConfig::from_shape(FixedShape(shape)),
+                        }),
+                        dbg!(ArrayStrategy {
+                            elem: 10..20,
+                            config: ArrayStrategyConfig::from_shape(FixedShape(shape)),
+                        }),
+                    )
+                })
+        ) {
+            dbg!((arr1.shape(), arr2.shape()));
+            prop_assert_eq!(arr1.shape(), arr2.shape());
+            prop_assert_ne!(arr1, arr2);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn example(arr in ArrayStrategy { elem: 0..10, config: ArrayStrategyConfig::<AnyShape<Ix3>>::default() }) {
             prop_assert_ne!(arr.sum() % 5, 4);
         }
     }
