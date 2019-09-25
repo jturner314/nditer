@@ -5,16 +5,16 @@ authors = ["Jim Turner <rust@turner.link>"]
 edition = "2018"
 
 [dependencies]
-itertools = "0.7"
-ndarray = "0.12"
+itertools = "0.8"
+ndarray = "0.13"
 num-traits = "0.2"
 
 [dev-dependencies]
 criterion = "0.2"
-ndarray-rand = "0.9"
+ndarray-rand = "0.11"
 quickcheck = "0.8"
 quickcheck_macros = "0.8"
-rand = "0.6"
+rand = "0.7"
 
 [[bench]]
 name = "iter"
