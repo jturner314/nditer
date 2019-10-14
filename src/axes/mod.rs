@@ -1,5 +1,7 @@
 use crate::{DimensionExt, SubDim};
 use ndarray::{Axis, Dimension, IntoDimension, Ix0, IxDyn};
+#[cfg(test)]
+use rand::{distributions::Distribution, Rng};
 use std::marker::PhantomData;
 
 pub use axes_for::AxesFor;
@@ -120,6 +122,11 @@ where
         }
     }
 
+    /// Returns the number of elements that are `false`.
+    pub fn num_false(&self) -> usize {
+        self.for_ndim() - self.num_true()
+    }
+
     /// Converts the number of true values into `IxDyn`.
     #[inline]
     pub fn into_dyn_num_true(self) -> AxesMask<D, IxDyn> {
@@ -162,6 +169,37 @@ where
     #[inline]
     pub fn write(&mut self, axis: Axis, value: bool) {
         self.mask[axis.index()] = value as usize;
+    }
+
+    /// Modifies the mask in place by calling `f` by value on each element. The
+    /// mask is updated with the new values.
+    pub fn mapv_inplace<F>(&mut self, mut f: F)
+    where
+        F: FnMut(bool) -> bool,
+    {
+        self.mask.map_inplace(|m| *m = f(*m != 0) as usize);
+    }
+
+    /// Modifies the mask in place by calling `f` by value on each axis and
+    /// element. The mask is updated with the new values.
+    pub fn indexed_mapv_inplace<F>(&mut self, mut f: F)
+    where
+        F: FnMut(Axis, bool) -> bool,
+    {
+        self.mask
+            .indexed_map_inplace(|axis, m| *m = f(axis, *m != 0) as usize);
+    }
+
+    /// Generates a random mask, where the elements are sampled using `distro`.
+    #[cfg(test)]
+    pub fn random<IdS, R>(ndim: usize, distribution: IdS, rng: &mut R) -> Self
+    where
+        IdS: Distribution<bool>,
+        R: Rng + ?Sized,
+    {
+        let mut mask = D::zeros(ndim);
+        mask.map_inplace(|m| *m = distribution.sample(rng) as usize);
+        AxesMask::from(mask)
     }
 }
 

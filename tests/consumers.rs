@@ -1,8 +1,8 @@
 use ndarray::prelude::*;
-use ndarray_rand::RandomExt;
 use nditer::{ArrayBaseExt, NdProducer};
 use quickcheck_macros::quickcheck;
-use rand::distributions::Uniform;
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 
 #[test]
 fn fold() {
@@ -12,7 +12,9 @@ fn fold() {
 
 #[test]
 fn pairwise_sum() {
-    let arr = Array3::<i32>::random((31, 5, 515), Uniform::new(-10, 10));
+    let mut rng = thread_rng();
+    let distr = Uniform::new(-10, 10);
+    let arr = Array3::<i32>::from_shape_fn((31, 5, 515), |_| distr.sample(&mut rng));
     let view = arr.slice(s![..;2, .., ..]);
     assert_eq!(view.sum(), view.producer().cloned().pairwise_sum());
 }

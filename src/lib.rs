@@ -992,6 +992,9 @@ pub struct Layout<D: Dimension> {
 
 /// Extension methods for `Dimension` types.
 pub(crate) trait DimensionExt {
+    /// Creates a new instance with the given `ndim`, where all elements are `elem`.
+    fn from_elem(ndim: usize, elem: usize) -> Self;
+
     /// Applies the fold to the values and returns the result.
     fn foldv<F, B>(&self, init: B, f: F) -> B
     where
@@ -1031,6 +1034,12 @@ pub(crate) trait DimensionExt {
 }
 
 impl<D: Dimension> DimensionExt for D {
+    fn from_elem(ndim: usize, elem: usize) -> Self {
+        let mut out = D::zeros(ndim);
+        out.slice_mut().iter_mut().for_each(|x| *x = elem);
+        out
+    }
+
     fn foldv<F, B>(&self, init: B, f: F) -> B
     where
         F: FnMut(B, usize) -> B,

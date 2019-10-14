@@ -137,6 +137,11 @@ where
         self.axes.0.slice_mut().swap(a, b)
     }
 
+    /// Reverses the order of the axes, in-place.
+    pub fn reverse(&mut self) {
+        self.axes.0.slice_mut().reverse();
+    }
+
     #[cfg(test)]
     pub(crate) fn shuffle<R: Rng + ?Sized>(&mut self, rng: &mut R) {
         self.axes.0.slice_mut().shuffle(rng);
