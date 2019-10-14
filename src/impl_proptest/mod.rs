@@ -181,7 +181,6 @@ mod tests {
             })
         ) {
             prop_assert_eq!(&arr1.shape()[..2], arr2.shape());
-            // prop_assert_ne!(arr1, arr2);
         }
     }
 
@@ -192,41 +191,6 @@ mod tests {
             layout: LayoutStrategy::<AxesConstraintsConstNdim<Ix3>>::default(),
         }) {
             prop_assert_ne!(arr.sum() % 5, 4);
-        }
-    }
-
-    #[test]
-    fn exampleslfjkl() {
-        let mut runner = proptest::test_runner::TestRunner::default();
-        let strategy = ArrayStrategy {
-            elem: 0..10,
-            layout: LayoutStrategy::<AxesConstraintsConstNdim<Ix3>>::default(),
-        };
-        runner.run(&strategy, |arr| Ok(())).unwrap();
-    }
-
-    #[test]
-    fn test_add2() {
-        let mut runner = proptest::test_runner::TestRunner::default();
-        // Combine our two inputs into a strategy for one tuple. Our test
-        // function then destructures the generated tuples back into separate
-        // `a` and `b` variables to be passed in to `add()`.
-        runner
-            .run(&(0..1000i32, 0..1000i32), |(a, b)| {
-                let sum = a + b;
-                assert!(sum >= a);
-                assert!(sum >= b);
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    proptest! {
-        #[test]
-        fn test_add(a in 0..1000i32, b in 0..1000i32) {
-            let sum = a + b;
-            assert!(sum >= a);
-            assert!(sum >= b);
         }
     }
 }
