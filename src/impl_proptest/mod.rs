@@ -171,6 +171,7 @@ mod tests {
                         elem: 10..20,
                         layout: LayoutStrategy {
                             axes_constraints: AxesConstraintsConstNdim::<Ix2> {
+                                // FIXME: Error: The product of `low` must be less than `high_product`.
                                 axis_lens: vec![nrows..nrows+1, ncols..ncols+1],
                                 ..Default::default()
                             },
