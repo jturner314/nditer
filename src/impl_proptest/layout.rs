@@ -22,21 +22,80 @@ fn factorial(n: u64) -> u64 {
     (2..=n).product()
 }
 
-/// Returns the generalized volume of an n-dimensional corner,
+/// Returns the n-dimensional volume of an n-dimensional corner,
 ///
 /// ```text
-/// l  xₙ₋₁ xₙ₋₂     x₂  x₁
-/// ⌠   ⌠   ⌠       ⌠   ⌠
-/// ⎮   ⎮   ⎮   ⋯   ⎮   ⎮ dx₀ dx₁ … dxₙ₋₃ dxₙ₋₂ xₙ₋₁  =  lⁿ / n!
-/// ⌡   ⌡   ⌡       ⌡   ⌡
-/// 0   0   0       0   0
+/// s  s−xₙ₋₁ s−xₙ₋₁−xₙ₋₂   s−xₙ₋₁−⋯−x₂ s−xₙ₋₁−⋯−x₁
+/// ⌠    ⌠        ⌠              ⌠           ⌠
+/// ⎮    ⎮        ⎮       ⋯      ⎮           ⎮      dx₀ dx₁ … dxₙ₋₃ dxₙ₋₂ dxₙ₋₁ = sⁿ / n!
+/// ⌡    ⌡        ⌡              ⌡           ⌡
+/// 0    0        0              0           0
 /// ```
 ///
-/// where `n` is the number of dimensions and `l` is the edge length.
+/// where `n` is the number of dimensions and `s` is the side length. (For
+/// `ndim == 0`, we define the volume as `1.`.)
 ///
-/// **Panics** if `ndim!` would overflow `u64`.
-fn volume_of_corner(ndim: u8, edge_length: f64) -> f64 {
-    edge_length.powi(ndim as i32) / factorial(ndim as u64) as f64
+/// In other words, this is the n-dimensional volume of
+///
+/// ```text
+/// ⎧                                                            ⎛n−1      ⎞ ⎫
+/// ⎨ (x₀, x₁, …, xₙ₋₁) | (x₀ ≥ 0) ∧ (x₁ ≥ 0) ∧ … ∧ (xₙ₋₁ ≥ 0) ∧ ⎜ ∑ xᵢ < s⎟ ⎬
+/// ⎩                                                            ⎝i=0      ⎠ ⎭
+/// ```
+///
+/// Note that `s` must be nonnegative for the result to make sense as a volume.
+///
+/// **Panics** if the factorial of `ndim` would overflow `u64`.
+///
+/// # Proof
+///
+/// A proof (by induction) of the formula follows.
+///
+/// Define
+///
+/// ```text
+///          ⎧ 1                                                                             for n = 0
+///          ⎪
+///          ⎪ s  s−xₙ₋₁ s−xₙ₋₁−xₙ₋₂   s−xₙ₋₁−⋯−x₂ s−xₙ₋₁−⋯−x₁
+/// f(n,s) = ⎨ ⌠    ⌠        ⌠              ⌠           ⌠
+///          ⎪ ⎮    ⎮        ⎮       ⋯      ⎮           ⎮      dx₀ dx₁ … dxₙ₋₃ dxₙ₋₂ dxₙ₋₁   for n = 1,2,…
+///          ⎪ ⌡    ⌡        ⌡              ⌡           ⌡
+///          ⎩ 0    0        0              0           0
+/// ```
+///
+/// We wish to show that `f(n,s) = sⁿ / n! for (n ∈ {0,1,2,…}) ∧ (s > 0)`.
+///
+/// First, it holds for `n = 0` and `n = 1`:
+///
+/// ```text
+/// f(0,s) = 1            and    s⁰ / 0! = 1,    so f(0,s) = s⁰ / 0!
+///
+///          s
+/// f(1,s) = ∫ dx₀ = s    and    s¹ / 1! = s,    so f(1,s) = s¹ / 1!
+///          0
+/// ```
+///
+/// Next, we show that if it holds for `n ∈ {1,2,…}`, it also holds for `n+1 ∈ {2,3,…}`:
+///
+/// ```text
+///             s  s−xₙ s−xₙ−xₙ₋₁   s−xₙ−⋯−x₂ s−xₙ−⋯−x₁
+///             ⌠   ⌠      ⌠            ⌠          ⌠
+///  f(n+1,s) = ⎮   ⎮      ⎮      ⋯     ⎮          ⎮      dx₀ dx₁ … dxₙ₋₂ dxₙ₋₁ dxₙ    for n ∈ {1,2,…}, by definition of f
+///             ⌡   ⌡      ⌡            ⌡          ⌡
+///             0   0      0            0          0
+///
+///             s
+///           = ∫ f(n,s−xₙ) dxₙ                                                        for n ∈ {1,2,…} by definition of f
+///             0
+///
+///             s
+///           = ∫ (s-xₙ)ⁿ / n! dxₙ                                                     by the assumption that it holds for n ∈ {1,2,…}
+///             0
+///
+///           = sⁿ⁺¹ / (n+1)!                                                          for (n ∈ {0,1,2,…}) ∧ (s > 0)
+/// ```
+fn volume_of_corner(ndim: u8, side_length: f64) -> f64 {
+    side_length.powi(ndim as i32) / factorial(ndim as u64) as f64
 }
 
 /// Returns the generalized volume of n-dimensional points `x` that satisfy both
